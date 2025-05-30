@@ -75,9 +75,9 @@ if df is not None and selected_data_column is not None:
     subsample = st.sidebar.slider("subsample", 0.5, 1.0, 0.8, 0.05)
     colsample_bytree = st.sidebar.slider("colsample_bytree", 0.5, 1.0, 0.8, 0.05)
 
-    st.sidebar.header("Forecast Horizons")
+    st.sidebar.header("Forecast Horizon")
+    # Only recursive forecast months are needed now
     k_months = st.sidebar.number_input("Recursive Forecast Months (k)", 1, 24, 6)
-    k_months_direct = st.sidebar.number_input("Direct Forecast Months (k_direct)", 1, 24, 6)
 
     # --- Data Preparation ---
     data_column_name = selected_data_column
@@ -148,8 +148,10 @@ if df is not None and selected_data_column is not None:
                 # Invert predictions to original scale
                 train_predict = scaler.inverse_transform(train_predict_scaled.reshape(-1, 1))
                 Y_train_actual = scaler.inverse_transform(Y_train.reshape(-1, 1))
+                # Corrected line: test_predict should use test_predict_scaled
                 test_predict = scaler.inverse_transform(test_predict_scaled.reshape(-1, 1))
                 Y_test_actual = scaler.inverse_transform(Y_test.reshape(-1, 1))
+
 
                 # Calculate MAPE
                 train_mape = mean_absolute_percentage_error(Y_train_actual, train_predict) * 100
@@ -163,8 +165,6 @@ if df is not None and selected_data_column is not None:
                 fig_predict, ax_predict = plt.subplots(figsize=(12, 6))
 
                 # Adjust indices for plotting
-                # Y contains the actual values for X, so its length is len(df) - look_back
-                # The actual values for plotting are df.iloc[look_back:]
                 actual_data_for_plot = scaler.inverse_transform(Y.reshape(-1, 1))
                 plot_indices = df.index[look_back : look_back + len(actual_data_for_plot)]
 
@@ -211,81 +211,18 @@ if df is not None and selected_data_column is not None:
                     future_timestamps_recursive = pd.date_range(start=last_timestamp, periods=k_months + 1, freq='MS')[1:]
                     st.write(pd.DataFrame(forecasted_values, index=future_timestamps_recursive, columns=['Forecast']))
 
+                    # Plotting recursive forecast
+                    st.subheader("Recursive Forecast Plot") # Changed title for clarity
+                    fig_forecast, ax_forecast = plt.subplots(figsize=(12, 6))
+                    # Plot the last 100 actual points for context, or fewer if less than 100 available
+                    num_points_to_plot = min(100, len(df))
+                    ax_forecast.plot(df.index[-num_points_to_plot:], df[data_column_name].tail(num_points_to_plot), label='Historical Data', color='blue')
 
-                    # Direct Forecast
-                    def create_dataset_direct(dataset, look_back=1, forecast_horizon=1):
-                        """
-                        Creates a dataset for direct time series forecasting.
-                        X will be the look_back sequence, Y will be the value at forecast_horizon.
-                        """
-                        X, Y = [], []
-                        # Ensure enough data for both look_back and forecast_horizon
-                        if len(dataset) < look_back + forecast_horizon:
-                            return np.array([]), np.array([]) # Return empty arrays if not enough data
+                    ax_forecast.plot(future_timestamps_recursive, forecasted_values, label=f'Recursive Forecast ({k_months} months)', color='purple', linestyle='--')
 
-                        for i in range(len(dataset) - look_back - forecast_horizon + 1):
-                            a = dataset[i:(i + look_back), 0]
-                            X.append(a)
-                            Y.append(dataset[i + look_back + forecast_horizon - 1, 0])
-                        return np.array(X), np.array(Y)
-
-                    # Prepare data for direct forecasting model
-                    X_direct, Y_direct = create_dataset_direct(scaled_data, look_back, k_months_direct)
-
-                    # Split data for direct model
-                    if len(X_direct) > 0: # Ensure there's enough data for direct forecast model training
-                        test_size_direct = int(len(X_direct) * test_size_ratio)
-                        if test_size_direct == 0 and len(X_direct) > 0:
-                            test_size_direct = 1
-                        if len(X_direct) < test_size_direct + 1:
-                            st.warning("Not enough data for direct forecast model training with the current parameters. Please adjust 'look_back', 'Direct Forecast Months', or 'Test Set Size Ratio'.")
-                        else:
-                            train_size_direct = len(X_direct) - test_size_direct
-                            X_train_direct, X_test_direct = X_direct[0:train_size_direct,:], X_direct[train_size_direct:len(X_direct),:]
-                            Y_train_direct, Y_test_direct = Y_direct[0:train_size_direct], Y_direct[train_size_direct:len(Y_direct)]
-
-                            # Train a new model for direct forecast
-                            model_direct = xgb.XGBRegressor(
-                                n_estimators=n_estimators,
-                                max_depth=max_depth,
-                                learning_rate=learning_rate,
-                                subsample=subsample,
-                                colsample_bytree=colsample_bytree,
-                                random_state=42,
-                                n_jobs=-1
-                            )
-                            with st.spinner(f"Training Direct Forecast Model for {k_months_direct} months..."):
-                                model_direct.fit(X_train_direct, Y_train_direct)
-                            st.success("Direct forecast model training complete!")
-
-                            # Predict using the direct model
-                            # The input for direct forecast is the last 'look_back' values
-                            last_sequence_direct = scaled_data[-look_back:].reshape(1, -1)
-                            direct_forecasted_value_scaled = model_direct.predict(last_sequence_direct)
-                            direct_forecasted_values = scaler.inverse_transform(direct_forecasted_value_scaled.reshape(-1, 1))
-
-                            st.write(f"**Direct Forecast for next {k_months_direct} month(s):**")
-                            # For direct forecast, we predict a single point k_months_direct into the future.
-                            # So, we need only one timestamp for this single prediction.
-                            direct_forecast_timestamp = pd.date_range(start=last_timestamp, periods=k_months_direct + 1, freq='MS')[-1:]
-                            st.write(pd.DataFrame(direct_forecasted_values, index=direct_forecast_timestamp, columns=['Forecast']))
-
-                            # Plotting all forecasts
-                            st.subheader("Combined Forecasts")
-                            fig_forecast, ax_forecast = plt.subplots(figsize=(12, 6))
-                            # Plot the last 100 actual points for context, or fewer if less than 100 available
-                            num_points_to_plot = min(100, len(df))
-                            ax_forecast.plot(df.index[-num_points_to_plot:], df[data_column_name].tail(num_points_to_plot), label='Historical Data', color='blue')
-
-                            ax_forecast.plot(future_timestamps_recursive, forecasted_values, label=f'Recursive Forecast ({k_months} months)', color='purple', linestyle='--')
-                            # Plot the single direct forecast point
-                            ax_forecast.plot(direct_forecast_timestamp, direct_forecasted_values, label=f'Direct Forecast ({k_months_direct} months)', color='red', linestyle='o') # Added 'o' for clarity
-
-                            ax_forecast.set_title(f'XGBoost Time Series Forecast')
-                            ax_forecast.set_xlabel('Timestamp')
-                            ax_forecast.set_ylabel(data_column_name)
-                            ax_forecast.legend()
-                            ax_forecast.grid(True)
-                            st.pyplot(fig_forecast)
-                    else:
-                        st.warning(f"Not enough data to create a direct forecast dataset for {k_months_direct} month(s) with the specified 'look_back'. Please reduce 'look_back' or 'Direct Forecast Months' or provide more data.")
+                    ax_forecast.set_title(f'XGBoost Recursive Time Series Forecast')
+                    ax_forecast.set_xlabel('Timestamp')
+                    ax_forecast.set_ylabel(data_column_name)
+                    ax_forecast.legend()
+                    ax_forecast.grid(True)
+                    st.pyplot(fig_forecast)
