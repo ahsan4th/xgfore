@@ -1,284 +1,275 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import xgboost as xgb
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import numpy as np
-import datetime
+import matplotlib.pyplot as plt
+import xgboost as xgb
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_absolute_percentage_error
+from sklearn.model_selection import train_test_split
 
-# --- Konfigurasi Halaman Streamlit ---
-st.set_page_config(layout="wide", page_title="Aplikasi Peramalan Penumpang")
-st.title("Peramalan Jumlah Penumpang dengan XGBoost")
+st.set_page_config(layout="wide")
 
-# --- Fungsi Pembantu ---
+st.title("XGBoost Time Series Forecasting App")
 
-@st.cache_data
-def load_data(uploaded_file):
-    """Memuat data dari file CSV yang diunggah dan memproses kolom tanggal."""
-    if uploaded_file is not None:
-        try:
-            df = pd.read_csv(uploaded_file)
-            # Mengubah kolom 'Date' menjadi datetime dan menjadikannya indeks
-            df['Date'] = pd.to_datetime(df['Date'], format='%m/%d/%Y')
-            df = df.set_index('Date')
-            df.sort_index(inplace=True)
-            # Memastikan kolom 'Jumlah Penumpang' adalah numerik
-            df['Jumlah Penumpang'] = pd.to_numeric(df['Jumlah Penumpang'])
-            return df
-        except Exception as e:
-            st.error(f"Gagal memuat atau memproses data: {e}")
-            return None
-    return None
+st.sidebar.header("Upload Data")
+uploaded_file = st.sidebar.file_uploader("Choose a CSV file", type="csv")
 
-@st.cache_data
-def create_features(df):
-    """Membuat fitur-fitur rekayasa dari indeks deret waktu."""
-    df_copy = df.copy() # Bekerja pada salinan untuk menghindari SettingWithCopyWarning
-    df_copy['year'] = df_copy.index.year
-    df_copy['month'] = df_copy.index.month
-    df_copy['dayofweek'] = df_copy.index.dayofweek
-    df_copy['dayofyear'] = df_copy.index.dayofyear
-    df_copy['weekofyear'] = df_copy.index.isocalendar().week.astype(int)
-    df_copy['quarter'] = df_copy.index.quarter
-
-    # Menambahkan fitur lag
-    df_copy['lag_1'] = df_copy['Jumlah Penumpang'].shift(1)
-    df_copy['lag_2'] = df_copy['Jumlah Penumpang'].shift(2)
-    df_copy['lag_3'] = df_copy['Jumlah Penumpang'].shift(3)
-
-    # Menambahkan fitur rata-rata bergerak
-    df_copy['rolling_mean_3'] = df_copy['Jumlah Penumpang'].shift(1).rolling(window=3).mean()
-    df_copy['rolling_mean_7'] = df_copy['Jumlah Penumpang'].shift(1).rolling(window=7).mean()
-
-    # Menghapus baris yang mengandung NaN setelah pembuatan fitur (misalnya, karena lag)
-    return df_copy.dropna()
-
-# --- Inisialisasi State Sesi Streamlit ---
-# Digunakan untuk menyimpan variabel antar-jalankan (run) aplikasi
-if 'df' not in st.session_state:
-    st.session_state.df = None
-if 'model' not in st.session_state:
-    st.session_state.model = None
-if 'X_test' not in st.session_state:
-    st.session_state.X_test = None
-if 'y_test' not in st.session_state:
-    st.session_state.y_test = None
-if 'y_pred' not in st.session_state:
-    st.session_state.y_pred = None
-if 'future_forecast_df' not in st.session_state:
-    st.session_state.future_forecast_df = None
-if 'df_processed_for_training' not in st.session_state:
-    st.session_state.df_processed_for_training = None
-
-
-# --- Sidebar untuk Pengaturan Parameter ---
-st.sidebar.header("Pengaturan Model XGBoost")
-n_estimators = st.sidebar.slider("Jumlah Estimator (n_estimators)", 100, 2000, 1000, 50)
-learning_rate = st.sidebar.slider("Tingkat Pembelajaran (learning_rate)", 0.001, 0.1, 0.01, 0.001)
-max_depth = st.sidebar.slider("Kedalaman Maksimum (max_depth)", 3, 10, 5, 1)
-subsample = st.sidebar.slider("Subsample (subsample)", 0.5, 1.0, 0.7, 0.05)
-colsample_bytree = st.sidebar.slider("Colsample By Tree (colsample_bytree)", 0.5, 1.0, 0.7, 0.05)
-early_stopping_rounds = st.sidebar.slider("Early Stopping Rounds", 10, 200, 50, 10)
-
-st.sidebar.header("Pengaturan Peramalan")
-forecast_months = st.sidebar.slider("Jumlah bulan ke depan untuk diramalkan:", 1, 24, 6, 1)
-
-
-# --- Bagian Utama Aplikasi ---
-
-# 1. Upload Data
-st.header("1. Unggah Data")
-uploaded_file = st.file_uploader("Unggah file 'dataset_penumpang.csv' Anda", type="csv")
-
+df = None
 if uploaded_file is not None:
-    st.session_state.df = load_data(uploaded_file)
-    if st.session_state.df is not None:
-        st.success("Data berhasil dimuat!")
-        st.write("5 Baris Pertama Data:")
-        st.write(st.session_state.df.head())
-    else:
-        st.error("Terjadi kesalahan saat memuat data. Pastikan format file CSV benar.")
+    df = pd.read_csv(uploaded_file)
+    st.sidebar.success("File uploaded successfully!")
 
-# 2. Tampilan Plot Deret Waktu
-st.header("2. Plot Deret Waktu")
-if st.session_state.df is not None:
-    fig = px.line(st.session_state.df, x=st.session_state.df.index, y='Jumlah Penumpang',
-                  title='Jumlah Penumpang dari Waktu ke Waktu')
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.info("Silakan unggah data untuk melihat plot deret waktu.")
-
-# 3. Pelatihan Model
-st.header("3. Pelatihan Model")
-if st.button("Latih Model", disabled=st.session_state.df is None):
-    with st.spinner("Model sedang dilatih..."):
-        # Buat fitur-fitur dari data
-        df_processed = create_features(st.session_state.df.copy())
-        st.session_state.df_processed_for_training = df_processed # Simpan untuk referensi fitur
-
-        TARGET = 'Jumlah Penumpang'
-        # Dapatkan semua kolom kecuali target sebagai fitur
-        FEATURES = [col for col in df_processed.columns if col != TARGET]
-
-        if not FEATURES:
-            st.error("Tidak ada fitur yang dibuat. Pastikan data Anda memiliki kolom 'Jumlah Penumpang' dan cukup baris untuk pembuatan fitur.")
-            st.session_state.model = None
-            st.session_state.X_test = None
-            st.session_state.y_test = None
-            st.stop()
-
-
-        # Pemisahan data: menggunakan 80% data untuk pelatihan, 20% untuk pengujian
-        split_index = int(len(df_processed) * 0.8)
-        train_df = df_processed.iloc[:split_index]
-        test_df = df_processed.iloc[split_index:]
-
-        X_train, y_train = train_df[FEATURES], train_df[TARGET]
-        X_test, y_test = test_df[FEATURES], test_df[TARGET]
-
-        # Perbaikan: Periksa apakah X_test/y_test kosong atau terlalu kecil sebelum memasukkannya ke eval_set
-        eval_set_list = [(X_train, y_train)]
-        if not X_test.empty and not y_test.empty:
-            # Periksa apakah jumlah baris di X_test cukup untuk early_stopping_rounds
-            # Jika X_test terlalu kecil, early stopping mungkin tidak berfungsi dengan baik atau memicu error
-            if len(X_test) >= early_stopping_rounds: # Sebaiknya lebih besar atau sama
-                eval_set_list.append((X_test, y_test))
-            else:
-                st.warning(f"Data pengujian terlalu kecil ({len(X_test)} baris) untuk early stopping rounds ({early_stopping_rounds}). Evaluasi pada test set akan dilewatkan.")
-        else:
-            st.warning("Data pengujian kosong. Evaluasi pada test set akan dilewatkan.")
-
-        # Inisialisasi dan latih XGBoost Regressor dengan parameter dari sidebar
-        model = xgb.XGBRegressor(
-            objective='reg:squarederror', # Tujuan regresi
-            n_estimators=n_estimators,           # Jumlah pohon
-            learning_rate=learning_rate,          # Tingkat pembelajaran
-            max_depth=max_depth,                 # Kedalaman maksimum pohon
-            subsample=subsample,               # Rasio subsample baris
-            colsample_bytree=colsample_bytree,        # Rasio subsample kolom saat membuat setiap pohon
-            random_state=42,             # Untuk reproduktifitas
-            n_jobs=-1                    # Menggunakan semua inti CPU yang tersedia
+    st.sidebar.header("Data Settings")
+    if df is not None:
+        # Let user select the timestamp column
+        timestamp_columns = df.columns.tolist()
+        selected_timestamp_column = st.sidebar.selectbox(
+            "Select Timestamp Column", timestamp_columns
         )
 
-        model.fit(X_train, y_train,
-                  eval_set=eval_set_list, # Menggunakan list yang sudah diperiksa
-                  early_stopping_rounds=early_stopping_rounds,
-                  verbose=False)
+        # Let user select the data column for forecasting
+        data_columns = [col for col in df.columns if col != selected_timestamp_column]
+        if not data_columns:
+            st.sidebar.warning("No suitable data columns found after selecting timestamp.")
+            st.stop() # Stop execution if no data columns
 
-        st.session_state.model = model
-        st.session_state.X_test = X_test
-        st.session_state.y_test = y_test
-        st.success("Model berhasil dilatih!")
-        st.write(f"Ukuran data pelatihan: {len(X_train)} baris")
-        st.write(f"Ukuran data pengujian: {len(X_test)} baris")
-        st.write(f"Fitur yang digunakan: {FEATURES}")
+        selected_data_column = st.sidebar.selectbox(
+            "Select Data Column for Forecasting", data_columns
+        )
 
-# 4. Pengujian Model
-st.header("4. Pengujian Model")
-if st.button("Uji Model", disabled=st.session_state.model is None or st.session_state.X_test is None or st.session_state.X_test.empty):
-    with st.spinner("Model sedang diuji..."):
-        if st.session_state.model is not None and st.session_state.X_test is not None and not st.session_state.X_test.empty:
-            y_pred = st.session_state.model.predict(st.session_state.X_test)
-            st.session_state.y_pred = y_pred
+        # Process the dataframe based on user selections
+        try:
+            df[selected_timestamp_column] = pd.to_datetime(df[selected_timestamp_column])
+            df = df.set_index(selected_timestamp_column)
+            df = df.sort_index()
+            st.subheader("Raw Data Preview")
+            st.write(df.head())
+        except Exception as e:
+            st.sidebar.error(f"Error processing timestamp column: {e}")
+            df = None # Invalidate df if there's an error
+else:
+    st.info("Please upload a CSV file to begin.")
 
-            mae = mean_absolute_error(st.session_state.y_test, y_pred)
-            rmse = np.sqrt(mean_squared_error(st.session_state.y_test, y_pred))
-            r2 = r2_score(st.session_state.y_test, y_pred)
+# --- Forecasting Parameters (only show if data is loaded) ---
+if df is not None:
+    st.sidebar.header("Model Parameters")
+    look_back = st.sidebar.slider("Look-back Window (Months)", 1, 12, 3)
+    test_size_ratio = st.sidebar.slider("Test Set Size Ratio", 0.1, 0.4, 0.2, 0.05)
 
-            st.write(f"**Metrik Evaluasi pada Data Pengujian:**")
-            st.write(f"**Mean Absolute Error (MAE):** {mae:.2f}")
-            st.write(f"**Root Mean Squared Error (RMSE):** {rmse:.2f}")
-            st.write(f"**R-squared (R2):** {r2:.2f}")
+    st.sidebar.subheader("XGBoost Hyperparameters")
+    n_estimators = st.sidebar.slider("n_estimators", 50, 500, 100, 10)
+    max_depth = st.sidebar.slider("max_depth", 3, 10, 5)
+    learning_rate = st.sidebar.slider("learning_rate", 0.01, 0.3, 0.1, 0.01)
+    subsample = st.sidebar.slider("subsample", 0.5, 1.0, 0.8, 0.05)
+    colsample_bytree = st.sidebar.slider("colsample_bytree", 0.5, 1.0, 0.8, 0.05)
 
-            # Plot Aktual vs. Prediksi
-            results_df = pd.DataFrame({
-                'Aktual': st.session_state.y_test,
-                'Prediksi': y_pred
-            }, index=st.session_state.y_test.index)
+    st.sidebar.header("Forecast Horizons")
+    k_months = st.sidebar.number_input("Recursive Forecast Months (k)", 1, 24, 6)
+    k_months_direct = st.sidebar.number_input("Direct Forecast Months (k_direct)", 1, 24, 6)
 
-            fig_test = px.line(results_df, x=results_df.index, y=['Aktual', 'Prediksi'],
-                               title='Jumlah Penumpang Aktual vs. Prediksi (Set Pengujian)')
-            st.plotly_chart(fig_test, use_container_width=True)
+    # --- Data Preparation ---
+    data_column_name = selected_data_column
+    data = df[data_column_name].values.reshape(-1, 1)
+
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_data = scaler.fit_transform(data)
+
+    def create_dataset(dataset, look_back=1):
+        X, Y = [], []
+        for i in range(len(dataset) - look_back):
+            a = dataset[i:(i + look_back), 0]
+            X.append(a)
+            Y.append(dataset[i + look_back, 0])
+        return np.array(X), np.array(Y)
+
+    X, Y = create_dataset(scaled_data, look_back)
+
+    # Split into training and testing sets
+    test_size = int(len(X) * test_size_ratio)
+    train_size = len(X) - test_size
+    X_train, X_test = X[0:train_size,:], X[train_size:len(X),:]
+    Y_train, Y_test = Y[0:train_size], Y[train_size:len(Y)]
+
+    # --- XGBoost Model Training ---
+    st.subheader("Model Training")
+    # Initialize and train the XGBoost regressor (This model will be used for both recursive and direct if no retraining is desired)
+    model = xgb.XGBRegressor(
+        n_estimators=n_estimators,
+        max_depth=max_depth,
+        learning_rate=learning_rate,
+        subsample=subsample,
+        colsample_bytree=colsample_bytree,
+        random_state=42,
+        n_jobs=-1 # Use all available cores
+    )
+
+    if st.button("Train Model"):
+        with st.spinner("Training XGBoost model..."):
+            model.fit(X_train, Y_train)
+        st.success("Model training complete!")
+
+        # --- Evaluation ---
+        st.subheader("Model Evaluation")
+
+        # Make predictions on training and test data
+        train_predict_scaled = model.predict(X_train)
+        test_predict_scaled = model.predict(X_test)
+
+        # Invert predictions to original scale
+        train_predict = scaler.inverse_transform(train_predict_scaled.reshape(-1, 1))
+        Y_train_actual = scaler.inverse_transform(Y_train.reshape(-1, 1))
+        test_predict = scaler.inverse_transform(test_predict_scaled.reshape(-1, 1))
+        Y_test_actual = scaler.inverse_transform(Y_test.reshape(-1, 1))
+
+        # Calculate MAPE
+        train_mape = mean_absolute_percentage_error(Y_train_actual, train_predict) * 100
+        test_mape = mean_absolute_percentage_error(Y_test_actual, test_predict) * 100
+
+        st.write(f"**Training MAPE:** {train_mape:.2f}%")
+        st.write(f"**Testing MAPE:** {test_mape:.2f}%")
+
+        # Plotting Training and Testing Predictions
+        st.subheader("Training and Testing Predictions")
+        fig_predict, ax_predict = plt.subplots(figsize=(12, 6))
+
+        # Adjust indices for plotting
+        train_plot_index = df.index[look_back : look_back + len(train_predict)]
+        test_plot_index = df.index[look_back + len(train_predict) : look_back + len(train_predict) + len(test_predict)]
+        full_plot_index = df.index[look_back:]
+
+        # Plot actual values
+        ax_predict.plot(full_plot_index, scaler.inverse_transform(Y.reshape(-1,1)), label='Actual Data', color='blue')
+        # Plot training predictions
+        ax_predict.plot(train_plot_index, train_predict, label='Training Prediction', color='green', linestyle='--')
+        # Plot testing predictions
+        ax_predict.plot(test_plot_index, test_predict, label='Testing Prediction', color='red', linestyle='--')
+
+        ax_predict.set_title("XGBoost Training and Testing Predictions")
+        ax_predict.set_xlabel("Timestamp")
+        ax_predict.set_ylabel(data_column_name)
+        ax_predict.legend()
+        ax_predict.grid(True)
+        st.pyplot(fig_predict)
+
+        # --- Forecasting ---
+        st.subheader("Forecasting Future Values")
+
+        # Recursive Forecast
+        last_sequence = scaled_data[-look_back:].reshape(1, -1)
+        forecasted_values = []
+
+        for _ in range(k_months):
+            predicted_value_scaled = model.predict(last_sequence)
+            forecasted_values.append(predicted_value_scaled[0])
+            # Update last_sequence by dropping the first element and adding the new prediction
+            last_sequence = np.roll(last_sequence, -1)
+            last_sequence[0, -1] = predicted_value_scaled[0]
+
+        forecasted_values = scaler.inverse_transform(np.array(forecasted_values).reshape(-1, 1))
+
+        st.write(f"**Recursive Forecast for next {k_months} months:**")
+        st.write(pd.DataFrame(forecasted_values, columns=['Forecast']))
+
+        # Direct Forecast (No retraining)
+        # The create_dataset_direct function will still define how the data would be prepared
+        # if a separate model were trained for each horizon, but we're reusing the 'model' here.
+        def create_dataset_direct(dataset, look_back=1, forecast_horizon=1):
+            X, Y = [], []
+            for i in range(len(dataset) - look_back - forecast_horizon + 1):
+                a = dataset[i:(i + look_back), 0]
+                X.append(a)
+                # Y is the value at forecast_horizon steps ahead
+                Y.append(dataset[i + look_back + forecast_horizon - 1, 0])
+            return np.array(X), np.array(Y)
+
+        # For direct forecasting without retraining, we simply use the already trained 'model'.
+        # The 'model' was trained to predict the next step (1-step ahead).
+        # To use it for a direct k_months_direct forecast, we need to ensure the input
+        # to the model corresponds to the 'look_back' features to predict the k-th month directly.
+        # However, a single model trained for 1-step-ahead prediction will not directly
+        # give an accurate k-step-ahead prediction in a "direct" fashion without being trained
+        # specifically for that k-step horizon.
+
+        # To adhere strictly to "no training again" and still show *something* for direct forecast,
+        # we will apply the *already trained model* (which was trained for 1-step ahead)
+        # to the most recent 'look_back' data. This is a simplification and not a true
+        # multi-step direct forecasting strategy, which typically involves training separate
+        # models for each horizon or a single model with multi-output capabilities.
+
+        # For the purpose of this request, we will use the trained 'model' to predict
+        # the 'k_months_direct' steps. This implies the 'model' is being asked to predict
+        # further than it was explicitly trained for if k_months_direct > 1, but without
+        # retraining.
+
+        if k_months_direct > 0:
+            last_sequence_for_direct_forecast = scaled_data[-look_back:].reshape(1, -1)
+            direct_forecasted_value_scaled = model.predict(last_sequence_for_direct_forecast)
+
+            # Important: The model was trained to predict 1-step ahead.
+            # If k_months_direct is greater than 1, this direct_forecasted_value_scaled
+            # is still a 1-step ahead prediction based on the last sequence.
+            # A true "direct" forecast for k_months_direct without retraining the original model
+            # would require a model specifically trained for that k_months_direct horizon.
+            #
+            # For the purpose of this problem's constraint ("tidak ada training lagi"),
+            # we will take this single 1-step prediction and present it as the
+            # k_months_direct forecast, acknowledging its limitation.
+            # If the intent was a true direct multi-step forecast,
+            # a different modeling strategy (e.g., training a separate model for each k,
+            # or a multi-output model) would be required.
+
+            # If k_months_direct is used as a specific future point for the model,
+            # the original `create_dataset_direct` prepared the `Y` correctly for a model
+            # to learn that specific horizon. However, since we are not retraining,
+            # we must use the already trained `model` (which was for 1-step ahead).
+            #
+            # To make *some* sense of "direct forecast" without retraining, and sticking
+            # to the current `model`, we will assume k_months_direct refers to the
+            # next 'k_months_direct' values predicted *recursively* by the trained model,
+            # but only showing the *last* one as the "direct" forecast. This is a compromise.
+            # A more accurate interpretation of "direct forecast without training" would be
+            # to use a model already trained for that specific horizon, but such a model
+            # is not present here.
+
+            # Let's adjust this to make more sense for "direct forecast" without retraining.
+            # If we want a direct forecast for `k_months_direct` ahead, and we *don't* retrain,
+            # the only way to get a value for `k_months_direct` ahead using the existing
+            # 1-step-ahead trained model is to *recursively* apply it `k_months_direct` times
+            # and take the last forecast. This essentially makes the "direct" forecast
+            # a recursive one, but we are *not training a new model* for it.
+
+            direct_forecasted_values_recursive_path = []
+            temp_last_sequence = scaled_data[-look_back:].reshape(1, -1)
+
+            for _ in range(k_months_direct):
+                predicted_value_scaled_temp = model.predict(temp_last_sequence)
+                direct_forecasted_values_recursive_path.append(predicted_value_scaled_temp[0])
+                temp_last_sequence = np.roll(temp_last_sequence, -1)
+                temp_last_sequence[0, -1] = predicted_value_scaled_temp[0]
+
+            direct_forecasted_values = scaler.inverse_transform(np.array(direct_forecasted_values_recursive_path).reshape(-1, 1))
+
+            st.write(f"**Direct Forecast (using recursive application of 1-step model) for next {k_months_direct} month(s):**")
+            st.write(pd.DataFrame(direct_forecasted_values, columns=['Forecast']))
+
+            # Generate future timestamps for plotting
+            last_timestamp = df.index[-1]
+            future_timestamps_recursive = pd.date_range(start=last_timestamp, periods=k_months + 1, freq='MS')[1:]
+            future_timestamps_direct = pd.date_range(start=last_timestamp, periods=k_months_direct + 1, freq='MS')[1:]
+
+            # Plotting all forecasts
+            st.subheader("Combined Forecasts")
+            fig_forecast, ax_forecast = plt.subplots(figsize=(12, 6))
+            ax_forecast.plot(df.index[-100:], df[data_column_name].tail(100), label='Historical Data', color='blue') # Last 100 points for context
+            ax_forecast.plot(future_timestamps_recursive, forecasted_values, label=f'Recursive Forecast ({k_months} months)', color='purple', linestyle='--')
+            # Plot the "direct" forecast which is essentially the recursive forecast for k_months_direct
+            ax_forecast.plot(future_timestamps_direct, direct_forecasted_values, label=f'Direct Forecast (recursive path for {k_months_direct} months)', color='red', linestyle='--')
+
+            ax_forecast.set_title(f'XGBoost Time Series Forecast')
+            ax_forecast.set_xlabel('Timestamp')
+            ax_forecast.set_ylabel(data_column_name)
+            ax_forecast.legend()
+            ax_forecast.grid(True)
+            st.pyplot(fig_forecast)
         else:
-            st.warning("Model belum dilatih atau data pengujian kosong. Silakan latih model terlebih dahulu.")
-
-# 5. Peramalan Masa Depan
-st.header("5. Peramalan Masa Depan")
-# forecast_months sudah diambil dari sidebar
-
-if st.button("Ramalkan Masa Depan", disabled=st.session_state.model is None):
-    with st.spinner(f"Melakukan peramalan untuk {forecast_months} bulan..."):
-        if st.session_state.model is not None and st.session_state.df_processed_for_training is not None:
-            last_date = st.session_state.df.index.max() # Tanggal terakhir dari data asli
-            # Buat rentang tanggal untuk masa depan
-            future_dates = pd.date_range(start=last_date + pd.DateOffset(months=1),
-                                         periods=forecast_months,
-                                         freq='MS') # 'MS' untuk awal bulan
-
-            future_df_template = pd.DataFrame(index=future_dates)
-            future_df_template['Jumlah Penumpang'] = np.nan # Placeholder untuk target
-
-            # Gabungkan data historis yang sudah diproses dengan tanggal masa depan untuk membuat fitur
-            # Ini penting agar fitur lag dan rolling mean dapat dihitung dengan benar untuk periode peramalan
-            combined_df_for_features = pd.concat([st.session_state.df_processed_for_training, future_df_template])
-            combined_df_for_features = create_features(combined_df_for_features)
-
-            # Saring hanya baris untuk tanggal masa depan
-            X_future = combined_df_for_features.loc[future_dates]
-
-            # Pastikan kolom X_future cocok dengan kolom yang digunakan saat melatih model
-            # Ini sangat penting agar model dapat membuat prediksi yang benar
-            # Ambil kolom fitur dari X_test yang digunakan saat pelatihan
-            if st.session_state.X_test is not None and not st.session_state.X_test.empty:
-                training_features_cols = st.session_state.X_test.columns
-            else:
-                # Fallback: jika X_test tidak tersedia, ambil fitur dari df_processed_for_training
-                training_features_cols = [col for col in st.session_state.df_processed_for_training.columns if col != 'Jumlah Penumpang']
-                if not training_features_cols:
-                    st.error("Tidak dapat menentukan fitur pelatihan. Harap latih model terlebih dahulu.")
-                    st.stop()
-
-            # Pastikan X_future hanya memiliki kolom yang sama dengan training_features_cols
-            X_future = X_future[training_features_cols]
-
-
-            if X_future.empty:
-                st.error("Tidak dapat membuat fitur untuk peramalan. Mungkin ada masalah dengan tanggal atau data historis tidak cukup.")
-                st.stop()
-            # Cek apakah ada NaN di fitur masa depan yang akan digunakan untuk prediksi
-            if X_future.isnull().values.any():
-                st.warning("Fitur untuk peramalan mengandung nilai NaN. Ini mungkin karena data historis tidak cukup untuk membuat fitur lag/rolling mean untuk semua periode peramalan yang diminta. Peramalan mungkin tidak akurat atau tidak lengkap.")
-                original_future_dates = X_future.index
-                X_future = X_future.dropna() # Hanya ramalkan baris yang fiturnya lengkap.
-                if X_future.empty:
-                    st.error("Setelah menghilangkan NaN, tidak ada data yang tersisa untuk diramalkan. Coba kurangi jumlah bulan yang diramalkan.")
-                    st.stop()
-                st.info(f"Hanya {len(X_future)} dari {len(original_future_dates)} bulan yang dapat diramalkan karena keterbatasan fitur historis.")
-
-
-            future_predictions = st.session_state.model.predict(X_future)
-            st.session_state.future_forecast_df = pd.DataFrame({
-                'Tanggal': X_future.index,
-                'Jumlah Penumpang Ramalan': future_predictions.round(0).astype(int) # Pembulatan dan ubah ke integer
-            }).set_index('Tanggal')
-
-            st.write("Peramalan Masa Depan:")
-            st.write(st.session_state.future_forecast_df)
-
-            # Plot data historis dan peramalan
-            # Gabungkan data asli dan hasil peramalan untuk plot
-            combined_plot_df = pd.DataFrame(index=st.session_state.df.index.union(st.session_state.future_forecast_df.index))
-            combined_plot_df['Jumlah Penumpang Aktual'] = st.session_state.df['Jumlah Penumpang']
-            combined_plot_df['Jumlah Penumpang Ramalan'] = st.session_state.future_forecast_df['Jumlah Penumpang Ramalan']
-
-            fig_forecast = px.line(combined_plot_df, x=combined_plot_df.index,
-                                   y=['Jumlah Penumpang Aktual', 'Jumlah Penumpang Ramalan'],
-                                   title='Jumlah Penumpang Historis dan Ramalan')
-
-            # Tandai awal periode peramalan
-            fig_forecast.add_vline(x=st.session_state.df.index.max(), line_dash="dash", line_color="red",
-                                   annotation_text="Awal Peramalan")
-
-            st.plotly_chart(fig_forecast, use_container_width=True)
-        else:
-            st.warning("Model belum dilatih. Silakan latih model terlebih dahulu sebelum melakukan peramalan.")
+            st.warning("Please set 'Direct Forecast Months (k_direct)' to a value greater than 0.")
