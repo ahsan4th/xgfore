@@ -129,7 +129,6 @@ if st.button("Latih Model", disabled=st.session_state.df is None):
 
 
         # Pemisahan data: menggunakan 80% data untuk pelatihan, 20% untuk pengujian
-        # Atau pisahkan berdasarkan tanggal (misalnya, 6 bulan terakhir untuk pengujian)
         split_index = int(len(df_processed) * 0.8)
         train_df = df_processed.iloc[:split_index]
         test_df = df_processed.iloc[split_index:]
@@ -137,22 +136,28 @@ if st.button("Latih Model", disabled=st.session_state.df is None):
         X_train, y_train = train_df[FEATURES], train_df[TARGET]
         X_test, y_test = test_df[FEATURES], test_df[TARGET]
 
-        # Perbaikan: Periksa apakah X_test/y_test kosong sebelum memasukkannya ke eval_set
-        # Ini mencegah error jika data pengujian terlalu kecil atau kosong
+        # Perbaikan: Periksa apakah X_test/y_test kosong atau terlalu kecil sebelum memasukkannya ke eval_set
         eval_set_list = [(X_train, y_train)]
         if not X_test.empty and not y_test.empty:
-            eval_set_list.append((X_test, y_test))
+            # Periksa apakah jumlah baris di X_test cukup untuk early_stopping_rounds
+            # Jika X_test terlalu kecil, early stopping mungkin tidak berfungsi dengan baik atau memicu error
+            if len(X_test) >= early_stopping_rounds: # Sebaiknya lebih besar atau sama
+                eval_set_list.append((X_test, y_test))
+            else:
+                st.warning(f"Data pengujian terlalu kecil ({len(X_test)} baris) untuk early stopping rounds ({early_stopping_rounds}). Evaluasi pada test set akan dilewatkan.")
+        else:
+            st.warning("Data pengujian kosong. Evaluasi pada test set akan dilewatkan.")
 
         # Inisialisasi dan latih XGBoost Regressor dengan parameter dari sidebar
         model = xgb.XGBRegressor(
-            objective='reg:squarederror',
-            n_estimators=n_estimators,
-            learning_rate=learning_rate,
-            max_depth=max_depth,
-            subsample=subsample,
-            colsample_bytree=colsample_bytree,
-            random_state=42,
-            n_jobs=-1
+            objective='reg:squarederror', # Tujuan regresi
+            n_estimators=n_estimators,           # Jumlah pohon
+            learning_rate=learning_rate,          # Tingkat pembelajaran
+            max_depth=max_depth,                 # Kedalaman maksimum pohon
+            subsample=subsample,               # Rasio subsample baris
+            colsample_bytree=colsample_bytree,        # Rasio subsample kolom saat membuat setiap pohon
+            random_state=42,             # Untuk reproduktifitas
+            n_jobs=-1                    # Menggunakan semua inti CPU yang tersedia
         )
 
         model.fit(X_train, y_train,
@@ -243,16 +248,11 @@ if st.button("Ramalkan Masa Depan", disabled=st.session_state.model is None):
             # Cek apakah ada NaN di fitur masa depan yang akan digunakan untuk prediksi
             if X_future.isnull().values.any():
                 st.warning("Fitur untuk peramalan mengandung nilai NaN. Ini mungkin karena data historis tidak cukup untuk membuat fitur lag/rolling mean untuk semua periode peramalan yang diminta. Peramalan mungkin tidak akurat atau tidak lengkap.")
-                # Anda bisa memilih untuk menjatuhkan baris NaN atau mengisinya.
-                # Untuk peramalan, baris dengan NaN di fitur cenderung tidak dapat diramalkan.
-                # Kita akan membiarkan XGBoost menanganinya (mungkin sebagai 0), atau lebih baik:
-                # Hanya ramalkan baris yang fiturnya lengkap.
                 original_future_dates = X_future.index
-                X_future = X_future.dropna()
+                X_future = X_future.dropna() # Hanya ramalkan baris yang fiturnya lengkap.
                 if X_future.empty:
                     st.error("Setelah menghilangkan NaN, tidak ada data yang tersisa untuk diramalkan. Coba kurangi jumlah bulan yang diramalkan.")
                     st.stop()
-                # Jika ada baris yang dijatuhkan, kita perlu memastikan indeks prediksi sesuai.
                 st.info(f"Hanya {len(X_future)} dari {len(original_future_dates)} bulan yang dapat diramalkan karena keterbatasan fitur historis.")
 
 
