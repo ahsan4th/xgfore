@@ -4,3 +4,5 @@ numpy
 xgboost
 scikit-learn
 matplotlib
+plotly
+datetime
