@@ -265,8 +265,10 @@ if df is not None and selected_data_column is not None:
                             direct_forecasted_values = scaler.inverse_transform(direct_forecasted_value_scaled.reshape(-1, 1))
 
                             st.write(f"**Direct Forecast for next {k_months_direct} month(s):**")
-                            future_timestamps_direct = pd.date_range(start=last_timestamp, periods=k_months_direct + 1, freq='MS')[1:]
-                            st.write(pd.DataFrame(direct_forecasted_values, index=future_timestamps_direct, columns=['Forecast']))
+                            # For direct forecast, we predict a single point k_months_direct into the future.
+                            # So, we need only one timestamp for this single prediction.
+                            direct_forecast_timestamp = pd.date_range(start=last_timestamp, periods=k_months_direct + 1, freq='MS')[-1:]
+                            st.write(pd.DataFrame(direct_forecasted_values, index=direct_forecast_timestamp, columns=['Forecast']))
 
                             # Plotting all forecasts
                             st.subheader("Combined Forecasts")
@@ -276,7 +278,8 @@ if df is not None and selected_data_column is not None:
                             ax_forecast.plot(df.index[-num_points_to_plot:], df[data_column_name].tail(num_points_to_plot), label='Historical Data', color='blue')
 
                             ax_forecast.plot(future_timestamps_recursive, forecasted_values, label=f'Recursive Forecast ({k_months} months)', color='purple', linestyle='--')
-                            ax_forecast.plot(future_timestamps_direct, direct_forecasted_values, label=f'Direct Forecast ({k_months_direct} months)', color='red', linestyle='--')
+                            # Plot the single direct forecast point
+                            ax_forecast.plot(direct_forecast_timestamp, direct_forecasted_values, label=f'Direct Forecast ({k_months_direct} months)', color='red', linestyle='o') # Added 'o' for clarity
 
                             ax_forecast.set_title(f'XGBoost Time Series Forecast')
                             ax_forecast.set_xlabel('Timestamp')
