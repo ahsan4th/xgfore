@@ -170,86 +170,59 @@ if df is not None:
         st.write(f"**Recursive Forecast for next {k_months} months:**")
         st.write(pd.DataFrame(forecasted_values, columns=['Forecast']))
 
-        # Direct Forecast (No retraining)
-        # The create_dataset_direct function will still define how the data would be prepared
-        # if a separate model were trained for each horizon, but we're reusing the 'model' here.
-        def create_dataset_direct(dataset, look_back=1, forecast_horizon=1):
-            X, Y = [], []
-            for i in range(len(dataset) - look_back - forecast_horizon + 1):
-                a = dataset[i:(i + look_back), 0]
-                X.append(a)
-                # Y is the value at forecast_horizon steps ahead
-                Y.append(dataset[i + look_back + forecast_horizon - 1, 0])
-            return np.array(X), np.array(Y)
-
-        # For direct forecasting without retraining, we simply use the already trained 'model'.
-        # The 'model' was trained to predict the next step (1-step ahead).
-        # To use it for a direct k_months_direct forecast, we need to ensure the input
-        # to the model corresponds to the 'look_back' features to predict the k-th month directly.
-        # However, a single model trained for 1-step-ahead prediction will not directly
-        # give an accurate k-step-ahead prediction in a "direct" fashion without being trained
-        # specifically for that k-step horizon.
-
-        # To adhere strictly to "no training again" and still show *something* for direct forecast,
-        # we will apply the *already trained model* (which was trained for 1-step ahead)
-        # to the most recent 'look_back' data. This is a simplification and not a true
-        # multi-step direct forecasting strategy, which typically involves training separate
-        # models for each horizon or a single model with multi-output capabilities.
-
-        # For the purpose of this request, we will use the trained 'model' to predict
-        # the 'k_months_direct' steps. This implies the 'model' is being asked to predict
-        # further than it was explicitly trained for if k_months_direct > 1, but without
-        # retraining.
-
+        # --- Direct Forecast using provided function ---
         if k_months_direct > 0:
-            last_sequence_for_direct_forecast = scaled_data[-look_back:].reshape(1, -1)
-            direct_forecasted_value_scaled = model.predict(last_sequence_for_direct_forecast)
+            st.write(f"**Direct Forecast for next {k_months_direct} months:**")
 
-            # Important: The model was trained to predict 1-step ahead.
-            # If k_months_direct is greater than 1, this direct_forecasted_value_scaled
-            # is still a 1-step ahead prediction based on the last sequence.
-            # A true "direct" forecast for k_months_direct without retraining the original model
-            # would require a model specifically trained for that k_months_direct horizon.
-            #
-            # For the purpose of this problem's constraint ("tidak ada training lagi"),
-            # we will take this single 1-step prediction and present it as the
-            # k_months_direct forecast, acknowledging its limitation.
-            # If the intent was a true direct multi-step forecast,
-            # a different modeling strategy (e.g., training a separate model for each k,
-            # or a multi-output model) would be required.
+            def create_direct_sequences(data, look_back, forecast_horizon):
+                X, y = [], []
+                for i in range(len(data) - look_back - forecast_horizon + 1):
+                    X.append(data[i:(i + look_back)].flatten())
+                    y.append(data[i + look_back + forecast_horizon - 1][0])
+                return np.array(X), np.array(y)
 
-            # If k_months_direct is used as a specific future point for the model,
-            # the original `create_dataset_direct` prepared the `Y` correctly for a model
-            # to learn that specific horizon. However, since we are not retraining,
-            # we must use the already trained `model` (which was for 1-step ahead).
-            #
-            # To make *some* sense of "direct forecast" without retraining, and sticking
-            # to the current `model`, we will assume k_months_direct refers to the
-            # next 'k_months_direct' values predicted *recursively* by the trained model,
-            # but only showing the *last* one as the "direct" forecast. This is a compromise.
-            # A more accurate interpretation of "direct forecast without training" would be
-            # to use a model already trained for that specific horizon, but such a model
-            # is not present here.
+            # Generate X and y for each horizon for direct forecasting
+            X_full = []
+            y_full_horizons = [[] for _ in range(k_months_direct)]
 
-            # Let's adjust this to make more sense for "direct forecast" without retraining.
-            # If we want a direct forecast for `k_months_direct` ahead, and we *don't* retrain,
-            # the only way to get a value for `k_months_direct` ahead using the existing
-            # 1-step-ahead trained model is to *recursively* apply it `k_months_direct` times
-            # and take the last forecast. This essentially makes the "direct" forecast
-            # a recursive one, but we are *not training a new model* for it.
+            # The loop for generating X_full and y_full_horizons should start from an index
+            # that allows for `look_back` and `k_months_direct` steps ahead.
+            # It should iterate over the entire scaled_data to create training pairs for direct models.
+            for i in range(len(scaled_data) - look_back - k_months_direct + 1):
+                X_full.append(scaled_data[i:(i + look_back)].flatten())
+                for h in range(k_months_direct):
+                    y_full_horizons[h].append(scaled_data[i + look_back + h][0])
 
-            direct_forecasted_values_recursive_path = []
-            temp_last_sequence = scaled_data[-look_back:].reshape(1, -1)
+            X_full = np.array(X_full)
+            y_full_horizons = [np.array(y) for y in y_full_horizons]
 
-            for _ in range(k_months_direct):
-                predicted_value_scaled_temp = model.predict(temp_last_sequence)
-                direct_forecasted_values_recursive_path.append(predicted_value_scaled_temp[0])
-                temp_last_sequence = np.roll(temp_last_sequence, -1)
-                temp_last_sequence[0, -1] = predicted_value_scaled_temp[0]
+            direct_forecasted_values_scaled = []
 
-            direct_forecasted_values = scaler.inverse_transform(np.array(direct_forecasted_values_recursive_path).reshape(-1, 1))
+            # Define the model factory for direct forecasting
+            # Use the same hyperparameters as the single model trained earlier
+            model_factory = lambda: xgb.XGBRegressor(
+                n_estimators=n_estimators,
+                max_depth=max_depth,
+                learning_rate=learning_rate,
+                subsample=subsample,
+                colsample_bytree=colsample_bytree,
+                random_state=42,
+                n_jobs=-1
+            )
 
-            st.write(f"**Direct Forecast (using recursive application of 1-step model) for next {k_months_direct} month(s):**")
+            # Train a separate model for each horizon and predict
+            for h in range(k_months_direct):
+                st.write(f"Training direct model for horizon {h+1}...")
+                horizon_model = model_factory()
+                horizon_model.fit(X_full, y_full_horizons[h])
+
+                last_sequence_full_data = scaled_data[-look_back:].reshape(1, look_back)
+                pred_h_scaled = horizon_model.predict(last_sequence_full_data)
+                direct_forecasted_values_scaled.append(pred_h_scaled[0])
+
+            # Inverse transform the direct forecasted values
+            direct_forecasted_values = scaler.inverse_transform(np.array(direct_forecasted_values_scaled).reshape(-1, 1)).flatten()
+
             st.write(pd.DataFrame(direct_forecasted_values, columns=['Forecast']))
 
             # Generate future timestamps for plotting
@@ -262,8 +235,7 @@ if df is not None:
             fig_forecast, ax_forecast = plt.subplots(figsize=(12, 6))
             ax_forecast.plot(df.index[-100:], df[data_column_name].tail(100), label='Historical Data', color='blue') # Last 100 points for context
             ax_forecast.plot(future_timestamps_recursive, forecasted_values, label=f'Recursive Forecast ({k_months} months)', color='purple', linestyle='--')
-            # Plot the "direct" forecast which is essentially the recursive forecast for k_months_direct
-            ax_forecast.plot(future_timestamps_direct, direct_forecasted_values, label=f'Direct Forecast (recursive path for {k_months_direct} months)', color='red', linestyle='--')
+            ax_forecast.plot(future_timestamps_direct, direct_forecasted_values, label=f'Direct Forecast ({k_months_direct} months)', color='red', linestyle='-.')
 
             ax_forecast.set_title(f'XGBoost Time Series Forecast')
             ax_forecast.set_xlabel('Timestamp')
