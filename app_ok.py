@@ -71,6 +71,19 @@ if 'df_processed_for_training' not in st.session_state:
     st.session_state.df_processed_for_training = None
 
 
+# --- Sidebar untuk Pengaturan Parameter ---
+st.sidebar.header("Pengaturan Model XGBoost")
+n_estimators = st.sidebar.slider("Jumlah Estimator (n_estimators)", 100, 2000, 1000, 50)
+learning_rate = st.sidebar.slider("Tingkat Pembelajaran (learning_rate)", 0.001, 0.1, 0.01, 0.001)
+max_depth = st.sidebar.slider("Kedalaman Maksimum (max_depth)", 3, 10, 5, 1)
+subsample = st.sidebar.slider("Subsample (subsample)", 0.5, 1.0, 0.7, 0.05)
+colsample_bytree = st.sidebar.slider("Colsample By Tree (colsample_bytree)", 0.5, 1.0, 0.7, 0.05)
+early_stopping_rounds = st.sidebar.slider("Early Stopping Rounds", 10, 200, 50, 10)
+
+st.sidebar.header("Pengaturan Peramalan")
+forecast_months = st.sidebar.slider("Jumlah bulan ke depan untuk diramalkan:", 1, 24, 6, 1)
+
+
 # --- Bagian Utama Aplikasi ---
 
 # 1. Upload Data
@@ -117,34 +130,35 @@ if st.button("Latih Model", disabled=st.session_state.df is None):
 
         # Pemisahan data: menggunakan 80% data untuk pelatihan, 20% untuk pengujian
         # Atau pisahkan berdasarkan tanggal (misalnya, 6 bulan terakhir untuk pengujian)
-        # Ambil tanggal terakhir sebagai acuan
-        last_date = df_processed.index.max()
-        # Tentukan tanggal pemisahan (misalnya, 20% dari durasi total, atau 6 bulan terakhir)
-        # Mari kita gunakan 20% dari data yang diproses untuk pengujian
         split_index = int(len(df_processed) * 0.8)
         train_df = df_processed.iloc[:split_index]
         test_df = df_processed.iloc[split_index:]
 
-
         X_train, y_train = train_df[FEATURES], train_df[TARGET]
         X_test, y_test = test_df[FEATURES], test_df[TARGET]
 
-        # Inisialisasi dan latih XGBoost Regressor
+        # Perbaikan: Periksa apakah X_test/y_test kosong sebelum memasukkannya ke eval_set
+        # Ini mencegah error jika data pengujian terlalu kecil atau kosong
+        eval_set_list = [(X_train, y_train)]
+        if not X_test.empty and not y_test.empty:
+            eval_set_list.append((X_test, y_test))
+
+        # Inisialisasi dan latih XGBoost Regressor dengan parameter dari sidebar
         model = xgb.XGBRegressor(
-            objective='reg:squarederror', # Tujuan regresi
-            n_estimators=1000,           # Jumlah pohon
-            learning_rate=0.01,          # Tingkat pembelajaran
-            max_depth=5,                 # Kedalaman maksimum pohon
-            subsample=0.7,               # Rasio subsample baris
-            colsample_bytree=0.7,        # Rasio subsample kolom saat membuat setiap pohon
-            random_state=42,             # Untuk reproduktifitas
-            n_jobs=-1                    # Menggunakan semua inti CPU yang tersedia
+            objective='reg:squarederror',
+            n_estimators=n_estimators,
+            learning_rate=learning_rate,
+            max_depth=max_depth,
+            subsample=subsample,
+            colsample_bytree=colsample_bytree,
+            random_state=42,
+            n_jobs=-1
         )
 
         model.fit(X_train, y_train,
-                  eval_set=[(X_train, y_train), (X_test, y_test)],
-                  early_stopping_rounds=50, # Berhenti lebih awal jika tidak ada peningkatan selama 50 putaran
-                  verbose=False) # Jangan tampilkan output pelatihan
+                  eval_set=eval_set_list, # Menggunakan list yang sudah diperiksa
+                  early_stopping_rounds=early_stopping_rounds,
+                  verbose=False)
 
         st.session_state.model = model
         st.session_state.X_test = X_test
@@ -156,9 +170,9 @@ if st.button("Latih Model", disabled=st.session_state.df is None):
 
 # 4. Pengujian Model
 st.header("4. Pengujian Model")
-if st.button("Uji Model", disabled=st.session_state.model is None):
+if st.button("Uji Model", disabled=st.session_state.model is None or st.session_state.X_test is None or st.session_state.X_test.empty):
     with st.spinner("Model sedang diuji..."):
-        if st.session_state.model is not None and st.session_state.X_test is not None:
+        if st.session_state.model is not None and st.session_state.X_test is not None and not st.session_state.X_test.empty:
             y_pred = st.session_state.model.predict(st.session_state.X_test)
             st.session_state.y_pred = y_pred
 
@@ -181,13 +195,11 @@ if st.button("Uji Model", disabled=st.session_state.model is None):
                                title='Jumlah Penumpang Aktual vs. Prediksi (Set Pengujian)')
             st.plotly_chart(fig_test, use_container_width=True)
         else:
-            st.warning("Model belum dilatih atau data pengujian tidak tersedia. Silakan latih model terlebih dahulu.")
+            st.warning("Model belum dilatih atau data pengujian kosong. Silakan latih model terlebih dahulu.")
 
 # 5. Peramalan Masa Depan
 st.header("5. Peramalan Masa Depan")
-# Input untuk berapa bulan ke depan yang akan diramalkan
-forecast_months = st.number_input("Jumlah bulan ke depan untuk diramalkan:", min_value=1, value=6, step=1,
-                                  disabled=st.session_state.model is None)
+# forecast_months sudah diambil dari sidebar
 
 if st.button("Ramalkan Masa Depan", disabled=st.session_state.model is None):
     with st.spinner(f"Melakukan peramalan untuk {forecast_months} bulan..."):
@@ -211,21 +223,37 @@ if st.button("Ramalkan Masa Depan", disabled=st.session_state.model is None):
 
             # Pastikan kolom X_future cocok dengan kolom yang digunakan saat melatih model
             # Ini sangat penting agar model dapat membuat prediksi yang benar
-            training_features = [col for col in st.session_state.df_processed_for_training.columns if col != 'Jumlah Penumpang']
-            X_future = X_future[training_features]
+            # Ambil kolom fitur dari X_test yang digunakan saat pelatihan
+            if st.session_state.X_test is not None and not st.session_state.X_test.empty:
+                training_features_cols = st.session_state.X_test.columns
+            else:
+                # Fallback: jika X_test tidak tersedia, ambil fitur dari df_processed_for_training
+                training_features_cols = [col for col in st.session_state.df_processed_for_training.columns if col != 'Jumlah Penumpang']
+                if not training_features_cols:
+                    st.error("Tidak dapat menentukan fitur pelatihan. Harap latih model terlebih dahulu.")
+                    st.stop()
+
+            # Pastikan X_future hanya memiliki kolom yang sama dengan training_features_cols
+            X_future = X_future[training_features_cols]
 
 
             if X_future.empty:
                 st.error("Tidak dapat membuat fitur untuk peramalan. Mungkin ada masalah dengan tanggal atau data historis tidak cukup.")
                 st.stop()
+            # Cek apakah ada NaN di fitur masa depan yang akan digunakan untuk prediksi
             if X_future.isnull().values.any():
-                st.warning("Fitur untuk peramalan mengandung nilai NaN. Peramalan mungkin tidak akurat. Coba kurangi jumlah bulan yang diramalkan atau periksa data Anda.")
-                # Anda bisa memilih untuk menjatuhkan baris NaN atau mengisinya, tergantung strategi
+                st.warning("Fitur untuk peramalan mengandung nilai NaN. Ini mungkin karena data historis tidak cukup untuk membuat fitur lag/rolling mean untuk semua periode peramalan yang diminta. Peramalan mungkin tidak akurat atau tidak lengkap.")
+                # Anda bisa memilih untuk menjatuhkan baris NaN atau mengisinya.
                 # Untuk peramalan, baris dengan NaN di fitur cenderung tidak dapat diramalkan.
+                # Kita akan membiarkan XGBoost menanganinya (mungkin sebagai 0), atau lebih baik:
+                # Hanya ramalkan baris yang fiturnya lengkap.
+                original_future_dates = X_future.index
                 X_future = X_future.dropna()
                 if X_future.empty:
-                    st.error("Setelah menghilangkan NaN, tidak ada data yang tersisa untuk diramalkan.")
+                    st.error("Setelah menghilangkan NaN, tidak ada data yang tersisa untuk diramalkan. Coba kurangi jumlah bulan yang diramalkan.")
                     st.stop()
+                # Jika ada baris yang dijatuhkan, kita perlu memastikan indeks prediksi sesuai.
+                st.info(f"Hanya {len(X_future)} dari {len(original_future_dates)} bulan yang dapat diramalkan karena keterbatasan fitur historis.")
 
 
             future_predictions = st.session_state.model.predict(X_future)
