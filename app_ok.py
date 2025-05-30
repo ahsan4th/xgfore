@@ -1,165 +1,234 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import xgboost as xgb
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_squared_error, mean_absolute_error
 import matplotlib.pyplot as plt
+import xgboost as xgb
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_absolute_percentage_error
+from sklearn.model_selection import train_test_split
 
-# Main Streamlit App
+st.set_page_config(layout="wide")
+
 st.title("XGBoost Time Series Forecasting App")
 
-st.sidebar.header("Settings")
+st.sidebar.header("Upload Data")
+uploaded_file = st.sidebar.file_uploader("Choose a CSV file", type="csv")
 
-uploaded_file = st.sidebar.file_uploader("Upload your CSV data", type=["csv"])
-
+df = None
 if uploaded_file is not None:
-    df = load_data(uploaded_file)
+    df = pd.read_csv(uploaded_file)
+    st.sidebar.success("File uploaded successfully!")
+
+    st.sidebar.header("Data Settings")
     if df is not None:
-        st.subheader("Original Data Head")
-        st.write(df.head())
+        # Let user select the timestamp column
+        timestamp_columns = df.columns.tolist()
+        selected_timestamp_column = st.sidebar.selectbox(
+            "Select Timestamp Column", timestamp_columns
+        )
 
-        # User inputs
-        available_columns = df.columns.tolist()
-        target_column = st.sidebar.selectbox("Select Target Column for Forecasting", available_columns)
+        # Let user select the data column for forecasting
+        data_columns = [col for col in df.columns if col != selected_timestamp_column]
+        if not data_columns:
+            st.sidebar.warning("No suitable data columns found after selecting timestamp.")
+            st.stop() # Stop execution if no data columns
 
-        if target_column:
-            # Ensure the target column is numeric
-            if not pd.api.types.is_numeric_dtype(df[target_column]):
-                st.error(f"The selected target column '{target_column}' is not numeric. Please select a numeric column.")
-            else:
-                window_size = st.sidebar.slider("Sliding Window Size (Lag Features)", min_value=1, max_value=20, value=5)
-                test_size = st.sidebar.slider("Test Data Size (%)", min_value=10, max_value=50, value=20) / 100
-                num_forecast_steps = st.sidebar.slider("Number of Forecast Steps", min_value=1, max_value=100, value=10)
+        selected_data_column = st.sidebar.selectbox(
+            "Select Data Column for Forecasting", data_columns
+        )
 
-                st.sidebar.subheader("XGBoost Parameters")
-                n_estimators = st.sidebar.number_input("n_estimators", min_value=10, max_value=1000, value=100, step=10)
-                learning_rate = st.sidebar.number_input("learning_rate", min_value=0.01, max_value=1.0, value=0.1, step=0.01)
-                max_depth = st.sidebar.number_input("max_depth", min_value=3, max_value=15, value=6, step=1)
-                subsample = st.sidebar.slider("subsample", min_value=0.1, max_value=1.0, value=0.8, step=0.05)
-                colsample_bytree = st.sidebar.slider("colsample_bytree", min_value=0.1, max_value=1.0, value=0.8, step=0.05)
-
-                xgb_params = {
-                    'objective': 'reg:squarederror',
-                    'n_estimators': n_estimators,
-                    'learning_rate': learning_rate,
-                    'max_depth': max_depth,
-                    'subsample': subsample,
-                    'colsample_bytree': colsample_bytree,
-                    'random_state': 42,
-                    'n_jobs': -1
-                }
-
-                # Data Preparation
-                st.subheader("Data Preparation")
-                try:
-                    X, y, processed_df = prepare_data(df, target_column, window_size)
-                    st.write("Features (X) and Target (y) created using sliding window.")
-                    st.write("X head:")
-                    st.write(X.head())
-                    st.write("y head:")
-                    st.write(y.head())
-
-                    # Train-Test Split
-                    st.subheader("Training and Testing")
-                    # Ensure there's enough data after creating lags for train/test split
-                    if len(X) > window_size: # Need at least window_size + 1 data points
-                        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, shuffle=False) # Use shuffle=False for time series
-                        st.write(f"Data split into training ({len(X_train)} samples) and testing ({len(X_test)} samples) sets.")
-
-                        # Model Training
-                        st.write("Training XGBoost model...")
-                        model = train_model(X_train, y_train, xgb_params)
-                        st.write("Model training complete.")
-
-                        # Testing and Evaluation
-                        st.subheader("Model Evaluation")
-                        y_pred = model.predict(X_test)
-
-                        mse = mean_squared_error(y_test, y_pred)
-                        rmse = np.sqrt(mse)
-                        mae = mean_absolute_error(y_test, y_pred)
-
-                        st.write(f"Mean Squared Error (MSE): {mse:.2f}")
-                        st.write(f"Root Mean Squared Error (RMSE): {rmse:.2f}")
-                        st.write(f"Mean Absolute Error (MAE): {mae:.2f}")
-
-                        # Plotting Actual vs Predicted
-                        st.subheader("Actual vs Predicted (Test Set)")
-                        fig, ax = plt.subplots(figsize=(10, 6))
-                        ax.plot(y_test.index, y_test, label="Actual", marker='o')
-                        ax.plot(y_test.index, y_pred, label="Predicted", marker='x')
-                        ax.set_xlabel("Index") # Or time-based index if available
-                        ax.set_ylabel(target_column)
-                        ax.set_title("Actual vs Predicted Values on Test Set")
-                        ax.legend()
-                        st.pyplot(fig)
-
-                        # Forecasting
-                        st.subheader("Forecasting")
-                        st.write(f"Forecasting the next {num_forecast_steps} steps...")
-
-                        # Get the last 'window_size' actual data points from the *original* processed dataframe
-                        # This ensures we have the correct lag features for the start of the forecast
-                        last_n_data_for_forecast = processed_df.tail(window_size +1) # Need window_size lags + 1 target for the first forecast step
-
-                        forecast_results = forecast(model, last_n_data_for_forecast, window_size, target_column, num_forecast_steps)
-
-                        st.write("Forecasted Values:")
-                        forecast_df = pd.DataFrame(forecast_results, columns=["Forecast"])
-                        # Optionally, create an index for the forecast (e.g., based on the last index of the training data)
-                        # The last index of processed_df is the last point used for training/testing
-                        last_data_index = processed_df.index[-1]
-                        forecast_indices = pd.RangeIndex(start=last_data_index + 1, stop=last_data_index + 1 + num_forecast_steps)
-                        forecast_df.index = forecast_indices
-                        st.write(forecast_df)
-
-                        # Plotting Forecast
-                        st.subheader("Forecast Visualization")
-                        fig_forecast, ax_forecast = plt.subplots(figsize=(12, 6))
-
-                        # Plot the historical data that was used for training/testing
-                        # Show the last portion of the processed_df including the data used for the last prediction
-                        plot_history_length = max(len(y_test), window_size * 2) # Show at least test data length or double window
-                        historical_plot_data = processed_df[target_column].tail(plot_history_length)
-                        ax_forecast.plot(historical_plot_data.index, historical_plot_data, label="Historical Data", color='blue')
-
-                        # Plot the forecasted data
-                        ax_forecast.plot(forecast_df.index, forecast_df['Forecast'], label="Forecast", color='red', linestyle='--')
-
-                        ax_forecast.set_xlabel("Index") # Or time-based index if available
-                        ax_forecast.set_ylabel(target_column)
-                        ax_forecast.set_title(f"Historical Data and {num_forecast_steps}-Step Forecast")
-                        ax_forecast.legend()
-                        st.pyplot(fig_forecast)
-
-                        st.subheader("Download Forecast Results")
-                        @st.cache_data
-                        def convert_df_to_csv(df):
-                            return df.to_csv().encode('utf-8')
-
-                        csv_file = convert_df_to_csv(forecast_df)
-                        st.download_button(
-                            label="Download Forecast CSV",
-                            data=csv_file,
-                            file_name=f'{target_column}_forecast.csv',
-                            mime='text/csv',
-                        )
-
-                    else:
-                         st.warning(f"Not enough data after creating lags for training and testing. Need at least {window_size + 1} data points.")
-
-
-                except Exception as e:
-                    st.error(f"An error occurred during data preparation or model training: {e}")
-
-
-        else:
-            st.warning("Please select a target column to proceed.")
-
-    else:
-        st.warning("Could not load data from the uploaded file.")
-
+        # Process the dataframe based on user selections
+        try:
+            df[selected_timestamp_column] = pd.to_datetime(df[selected_timestamp_column])
+            df = df.set_index(selected_timestamp_column)
+            df = df.sort_index()
+            st.subheader("Raw Data Preview")
+            st.write(df.head())
+        except Exception as e:
+            st.sidebar.error(f"Error processing timestamp column: {e}")
+            df = None # Invalidate df if there's an error
 else:
-    st.info("Please upload a CSV file to start.")
+    st.info("Please upload a CSV file to begin.")
 
+# --- Forecasting Parameters (only show if data is loaded) ---
+if df is not None:
+    st.sidebar.header("Model Parameters")
+    look_back = st.sidebar.slider("Look-back Window (Months)", 1, 12, 3)
+    test_size_ratio = st.sidebar.slider("Test Set Size Ratio", 0.1, 0.4, 0.2, 0.05)
+
+    st.sidebar.subheader("XGBoost Hyperparameters")
+    n_estimators = st.sidebar.slider("n_estimators", 50, 500, 100, 10)
+    max_depth = st.sidebar.slider("max_depth", 3, 10, 5)
+    learning_rate = st.sidebar.slider("learning_rate", 0.01, 0.3, 0.1, 0.01)
+    subsample = st.sidebar.slider("subsample", 0.5, 1.0, 0.8, 0.05)
+    colsample_bytree = st.sidebar.slider("colsample_bytree", 0.5, 1.0, 0.8, 0.05)
+
+    st.sidebar.header("Forecast Horizons")
+    k_months = st.sidebar.number_input("Recursive Forecast Months (k)", 1, 24, 6)
+    k_months_direct = st.sidebar.number_input("Direct Forecast Months (k_direct)", 1, 24, 6)
+
+    # --- Data Preparation ---
+    data_column_name = selected_data_column
+    data = df[data_column_name].values.reshape(-1, 1)
+
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_data = scaler.fit_transform(data)
+
+    def create_dataset(dataset, look_back=1):
+        X, Y = [], []
+        for i in range(len(dataset) - look_back):
+            a = dataset[i:(i + look_back), 0]
+            X.append(a)
+            Y.append(dataset[i + look_back, 0])
+        return np.array(X), np.array(Y)
+
+    X, Y = create_dataset(scaled_data, look_back)
+
+    # Split into training and testing sets
+    test_size = int(len(X) * test_size_ratio)
+    train_size = len(X) - test_size
+    X_train, X_test = X[0:train_size,:], X[train_size:len(X),:]
+    Y_train, Y_test = Y[0:train_size], Y[train_size:len(Y)]
+
+    # --- XGBoost Model Training ---
+    st.subheader("Model Training")
+    if st.button("Train Model"):
+        # Initialize and train the XGBoost regressor
+        model = xgb.XGBRegressor(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            subsample=subsample,
+            colsample_bytree=colsample_bytree,
+            random_state=42,
+            n_jobs=-1 # Use all available cores
+        )
+
+        with st.spinner("Training XGBoost model..."):
+            model.fit(X_train, Y_train)
+        st.success("Model training complete!")
+
+        # --- Evaluation ---
+        st.subheader("Model Evaluation")
+
+        # Make predictions on training and test data
+        train_predict_scaled = model.predict(X_train)
+        test_predict_scaled = model.predict(X_test)
+
+        # Invert predictions to original scale
+        train_predict = scaler.inverse_transform(train_predict_scaled.reshape(-1, 1))
+        Y_train_actual = scaler.inverse_transform(Y_train.reshape(-1, 1))
+        test_predict = scaler.inverse_transform(test_predict_scaled.reshape(-1, 1))
+        Y_test_actual = scaler.inverse_transform(Y_test.reshape(-1, 1))
+
+        # Calculate MAPE
+        train_mape = mean_absolute_percentage_error(Y_train_actual, train_predict) * 100
+        test_mape = mean_absolute_percentage_error(Y_test_actual, test_predict) * 100
+
+        st.write(f"**Training MAPE:** {train_mape:.2f}%")
+        st.write(f"**Testing MAPE:** {test_mape:.2f}%")
+
+        # Plotting Training and Testing Predictions
+        st.subheader("Training and Testing Predictions")
+        fig_predict, ax_predict = plt.subplots(figsize=(12, 6))
+
+        # Adjust indices for plotting
+        train_plot_index = df.index[look_back : look_back + len(train_predict)]
+        test_plot_index = df.index[look_back + len(train_predict) : look_back + len(train_predict) + len(test_predict)]
+        full_plot_index = df.index[look_back:]
+
+        # Plot actual values
+        ax_predict.plot(full_plot_index, scaler.inverse_transform(Y.reshape(-1,1)), label='Actual Data', color='blue')
+        # Plot training predictions
+        ax_predict.plot(train_plot_index, train_predict, label='Training Prediction', color='green', linestyle='--')
+        # Plot testing predictions
+        ax_predict.plot(test_plot_index, test_predict, label='Testing Prediction', color='red', linestyle='--')
+
+        ax_predict.set_title("XGBoost Training and Testing Predictions")
+        ax_predict.set_xlabel("Timestamp")
+        ax_predict.set_ylabel(data_column_name)
+        ax_predict.legend()
+        ax_predict.grid(True)
+        st.pyplot(fig_predict)
+
+        # --- Forecasting ---
+        st.subheader("Forecasting Future Values")
+
+        # Recursive Forecast
+        last_sequence = scaled_data[-look_back:].reshape(1, -1)
+        forecasted_values = []
+
+        for _ in range(k_months):
+            predicted_value_scaled = model.predict(last_sequence)
+            forecasted_values.append(predicted_value_scaled[0])
+            # Update last_sequence by dropping the first element and adding the new prediction
+            last_sequence = np.roll(last_sequence, -1)
+            last_sequence[0, -1] = predicted_value_scaled[0]
+
+        forecasted_values = scaler.inverse_transform(np.array(forecasted_values).reshape(-1, 1))
+
+        st.write(f"**Recursive Forecast for next {k_months} months:**")
+        st.write(pd.DataFrame(forecasted_values, columns=['Forecast']))
+
+        # Direct Forecast (Re-create create_dataset function for direct approach)
+        def create_dataset_direct(dataset, look_back=1, forecast_horizon=1):
+            X, Y = [], []
+            for i in range(len(dataset) - look_back - forecast_horizon + 1):
+                a = dataset[i:(i + look_back), 0]
+                X.append(a)
+                Y.append(dataset[i + look_back + forecast_horizon - 1, 0])
+            return np.array(X), np.array(Y)
+
+        # Prepare data for direct forecasting model
+        X_direct, Y_direct = create_dataset_direct(scaled_data, look_back, k_months_direct)
+
+        # Split data for direct model
+        if len(X_direct) > 0: # Ensure there's enough data for direct forecast
+            test_size_direct = int(len(X_direct) * test_size_ratio)
+            train_size_direct = len(X_direct) - test_size_direct
+            X_train_direct, X_test_direct = X_direct[0:train_size_direct,:], X_direct[train_size_direct:len(X_direct),:]
+            Y_train_direct, Y_test_direct = Y_direct[0:train_size_direct], Y_direct[train_size_direct:len(Y_direct)]
+
+            # Train a new model for direct forecast
+            model_direct = xgb.XGBRegressor(
+                n_estimators=n_estimators,
+                max_depth=max_depth,
+                learning_rate=learning_rate,
+                subsample=subsample,
+                colsample_bytree=colsample_bytree,
+                random_state=42,
+                n_jobs=-1
+            )
+            with st.spinner(f"Training Direct Forecast Model for {k_months_direct} months..."):
+                model_direct.fit(X_train_direct, Y_train_direct)
+            st.success("Direct forecast model training complete!")
+
+            # Predict using the direct model
+            # The input for direct forecast is the last 'look_back' values
+            last_sequence_direct = scaled_data[-look_back:].reshape(1, -1)
+            direct_forecasted_value_scaled = model_direct.predict(last_sequence_direct)
+            direct_forecasted_values = scaler.inverse_transform(direct_forecasted_value_scaled.reshape(-1, 1))
+
+            st.write(f"**Direct Forecast for next {k_months_direct} month(s):**")
+            st.write(pd.DataFrame(direct_forecasted_values, columns=['Forecast']))
+
+            # Generate future timestamps for plotting
+            last_timestamp = df.index[-1]
+            future_timestamps_recursive = pd.date_range(start=last_timestamp, periods=k_months + 1, freq='MS')[1:]
+            future_timestamps_direct = pd.date_range(start=last_timestamp, periods=k_months_direct + 1, freq='MS')[1:]
+
+            # Plotting all forecasts
+            st.subheader("Combined Forecasts")
+            fig_forecast, ax_forecast = plt.subplots(figsize=(12, 6))
+            ax_forecast.plot(df.index[-100:], df[data_column_name].tail(100), label='Historical Data', color='blue') # Last 100 points for context
+            ax_forecast.plot(future_timestamps_recursive, forecasted_values, label=f'Recursive Forecast ({k_months} months)', color='purple', linestyle='--')
+            ax_forecast.plot(future_timestamps_direct, direct_forecasted_values, label=f'Direct Forecast ({k_months_direct} months)', color='red', linestyle='--')
+
+            ax_forecast.set_title(f'XGBoost Time Series Forecast')
+            ax_forecast.set_xlabel('Timestamp')
+            ax_forecast.set_ylabel(data_column_name)
+            ax_forecast.legend()
+            ax_forecast.grid(True)
+            st.pyplot(fig_forecast)
+        else:
+            st.warning("Not enough data to perform direct forecasting with the selected 'look_back' and 'forecast_horizon'.")
