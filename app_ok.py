@@ -6,6 +6,7 @@ import xgboost as xgb
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_percentage_error
 from sklearn.model_selection import train_test_split
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf # Import for ACF/PACF
 
 st.set_page_config(layout="wide")
 
@@ -57,10 +58,19 @@ if uploaded_file is not None:
             df = df.sort_index()
             
             # Resample data based on selected frequency to ensure consistent time series
+            # Using .asfreq() instead of .resample().mean() for simplicity if we expect no gaps
+            # and want to explicitly fill, or just take the first value if multiple exist in a period.
+            # However, .resample().mean().ffill() is generally more robust for aggregation.
+            # Let's stick to the robust resampling for now.
             df = df[[selected_data_column]].resample(selected_freq).mean().fillna(method='ffill') # Forward fill missing values
             
             st.subheader("Raw Data Preview (Resampled)")
             st.write(df.head())
+
+            # --- Display Full Data ---
+            st.subheader("Full Data")
+            st.write(df)
+
         except Exception as e:
             st.sidebar.error(f"Error processing timestamp column or resampling: {e}")
             df = None # Invalidate df if there's an error
@@ -145,6 +155,24 @@ if df is not None:
     train_size = len(X) - test_size
     X_train, X_test = X[0:train_size,:], X[train_size:len(X),:]
     Y_train, Y_test = Y[0:train_size], Y[train_size:len(Y)]
+
+    # --- ACF and PACF Plots ---
+    st.subheader("ACF and PACF Plots")
+    st.write("These plots help in understanding the autocorrelation and partial autocorrelation in the series.")
+    if st.button("Generate ACF/PACF Plots"):
+        if len(df[selected_data_column]) > 1: # Need at least 2 data points for ACF/PACF
+            fig_acf, ax_acf = plt.subplots(figsize=(12, 6))
+            plot_acf(df[selected_data_column], ax=ax_acf, lags=min(20, len(df) - 1)) # Max lags is length of series - 1
+            ax_acf.set_title(f'Autocorrelation Function (ACF) for {data_column_name}')
+            st.pyplot(fig_acf)
+
+            fig_pacf, ax_pacf = plt.subplots(figsize=(12, 6))
+            plot_pacf(df[selected_data_column], ax=ax_pacf, lags=min(20, len(df) - 1))
+            ax_pacf.set_title(f'Partial Autocorrelation Function (PACF) for {data_column_name}')
+            st.pyplot(fig_pacf)
+        else:
+            st.warning("Not enough data points to generate ACF/PACF plots. Please upload more data.")
+
 
     # --- XGBoost Model Training ---
     st.subheader("Model Training")
@@ -231,12 +259,6 @@ if df is not None:
         st.write(pd.DataFrame(forecasted_values, index=future_index_recursive, columns=['Forecast']))
 
         # Direct Forecast (No retraining)
-        # To make this a "direct" forecast without retraining the model,
-        # we will use the *same* trained model (which predicts 1-step ahead)
-        # and apply it recursively `k_months_direct` times to get the final
-        # forecast for the 'k_months_direct' horizon. This is a common
-        # practical approach when a separate multi-step model is not trained.
-        
         if k_months_direct > 0:
             direct_forecasted_values_recursive_path = []
             temp_last_sequence = scaled_data[-look_back:].reshape(1, -1)
@@ -266,7 +288,14 @@ if df is not None:
             fig_forecast, ax_forecast = plt.subplots(figsize=(12, 6))
             
             # Plot a reasonable portion of historical data for context
-            plot_historical_length = 50 if forecast_frequency_option == 'Daily' else 24 if forecast_frequency_option == 'Monthly' else 5
+            # Dynamically adjust historical plot length based on frequency
+            if forecast_frequency_option == 'Daily':
+                plot_historical_length = min(len(df), 120) # Up to 120 days
+            elif forecast_frequency_option == 'Monthly':
+                plot_historical_length = min(len(df), 36) # Up to 36 months (3 years)
+            else: # Yearly
+                plot_historical_length = min(len(df), 10) # Up to 10 years
+
             ax_forecast.plot(df.index[-plot_historical_length:], df[data_column_name].tail(plot_historical_length), label='Historical Data', color='blue') 
             
             ax_forecast.plot(future_timestamps_recursive_plot, forecasted_values, label=f'Recursive Forecast ({k_months} {forecast_frequency_option.lower()}s)', color='purple', linestyle='--')
