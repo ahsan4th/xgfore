@@ -6,7 +6,6 @@ import xgboost as xgb
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics import mean_absolute_percentage_error
 from sklearn.model_selection import train_test_split
-from statsmodels.graphics.tsaplots import plot_acf, plot_pacf # Import for ACF/PACF
 
 st.set_page_config(layout="wide")
 
@@ -28,6 +27,19 @@ if uploaded_file is not None:
             "Select Timestamp Column", timestamp_columns
         )
 
+        # Let user select the forecasting frequency
+        forecast_frequency_option = st.sidebar.selectbox(
+            "Select Forecasting Frequency", ['Daily', 'Monthly', 'Yearly']
+        )
+
+        # Map selected frequency to pandas frequency string
+        freq_map = {
+            'Daily': 'D',
+            'Monthly': 'MS', # Month Start
+            'Yearly': 'YS'   # Year Start
+        }
+        selected_freq = freq_map[forecast_frequency_option]
+
         # Let user select the data column for forecasting
         data_columns = [col for col in df.columns if col != selected_timestamp_column]
         if not data_columns:
@@ -43,38 +55,14 @@ if uploaded_file is not None:
             df[selected_timestamp_column] = pd.to_datetime(df[selected_timestamp_column])
             df = df.set_index(selected_timestamp_column)
             df = df.sort_index()
-
-            # --- Display Raw Data ---
-            st.subheader("Raw Data Preview")
-            st.write(df) # Display entire DataFrame
-
-            # --- Time Series Plot ---
-            st.subheader(f"Time Series Plot of {selected_data_column}")
-            fig_ts, ax_ts = plt.subplots(figsize=(12, 6))
-            ax_ts.plot(df.index, df[selected_data_column])
-            ax_ts.set_title(f'{selected_data_column} Over Time')
-            ax_ts.set_xlabel("Timestamp")
-            ax_ts.set_ylabel(selected_data_column)
-            ax_ts.grid(True)
-            st.pyplot(fig_ts)
-
-            # --- ACF and PACF Plots ---
-            st.subheader("Autocorrelation (ACF) and Partial Autocorrelation (PACF) Plots")
-
-            # Ensure there's enough data for ACF/PACF plots
-            if len(df[selected_data_column]) > 1:
-                col1, col2 = st.columns(2)
-                with col1:
-                    fig_acf = plot_acf(df[selected_data_column], lags=min(20, len(df[selected_data_column]) - 1))
-                    st.pyplot(fig_acf)
-                with col2:
-                    fig_pacf = plot_pacf(df[selected_data_column], lags=min(20, len(df[selected_data_column]) - 1))
-                    st.pyplot(fig_pacf)
-            else:
-                st.warning("Not enough data points to generate ACF/PACF plots.")
-
+            
+            # Resample data based on selected frequency to ensure consistent time series
+            df = df[[selected_data_column]].resample(selected_freq).mean().fillna(method='ffill') # Forward fill missing values
+            
+            st.subheader("Raw Data Preview (Resampled)")
+            st.write(df.head())
         except Exception as e:
-            st.sidebar.error(f"Error processing timestamp column or plotting: {e}")
+            st.sidebar.error(f"Error processing timestamp column or resampling: {e}")
             df = None # Invalidate df if there's an error
 else:
     st.info("Please upload a CSV file to begin.")
@@ -82,7 +70,25 @@ else:
 # --- Forecasting Parameters (only show if data is loaded) ---
 if df is not None:
     st.sidebar.header("Model Parameters")
-    look_back = st.sidebar.slider("Look-back Window (Months)", 1, 12, 3)
+    
+    # Adjust look-back slider label and range based on frequency
+    if forecast_frequency_option == 'Daily':
+        look_back_label = "Look-back Window (Days)"
+        look_back_min = 7
+        look_back_max = 90
+        look_back_default = 30
+    elif forecast_frequency_option == 'Monthly':
+        look_back_label = "Look-back Window (Months)"
+        look_back_min = 1
+        look_back_max = 12
+        look_back_default = 3
+    else: # Yearly
+        look_back_label = "Look-back Window (Years)"
+        look_back_min = 1
+        look_back_max = 5
+        look_back_default = 1
+
+    look_back = st.sidebar.slider(look_back_label, look_back_min, look_back_max, look_back_default)
     test_size_ratio = st.sidebar.slider("Test Set Size Ratio", 0.1, 0.4, 0.2, 0.05)
 
     st.sidebar.subheader("XGBoost Hyperparameters")
@@ -93,7 +99,29 @@ if df is not None:
     colsample_bytree = st.sidebar.slider("colsample_bytree", 0.5, 1.0, 0.8, 0.05)
 
     st.sidebar.header("Forecast Horizons")
-    k_months = st.sidebar.number_input("Recursive Forecast Months (k)", 1, 24, 6)
+    
+    # Adjust forecast horizon labels and ranges based on frequency
+    if forecast_frequency_option == 'Daily':
+        k_label = "Recursive Forecast Days (k)"
+        k_direct_label = "Direct Forecast Days (k_direct)"
+        k_min = 1
+        k_max = 30
+        k_default = 7
+    elif forecast_frequency_option == 'Monthly':
+        k_label = "Recursive Forecast Months (k)"
+        k_direct_label = "Direct Forecast Months (k_direct)"
+        k_min = 1
+        k_max = 24
+        k_default = 6
+    else: # Yearly
+        k_label = "Recursive Forecast Years (k)"
+        k_direct_label = "Direct Forecast Years (k_direct)"
+        k_min = 1
+        k_max = 5
+        k_default = 1
+
+    k_months = st.sidebar.number_input(k_label, k_min, k_max, k_default)
+    k_months_direct = st.sidebar.number_input(k_direct_label, k_min, k_max, k_default)
 
     # --- Data Preparation ---
     data_column_name = selected_data_column
@@ -120,6 +148,7 @@ if df is not None:
 
     # --- XGBoost Model Training ---
     st.subheader("Model Training")
+    # Initialize and train the XGBoost regressor
     model = xgb.XGBRegressor(
         n_estimators=n_estimators,
         max_depth=max_depth,
@@ -127,7 +156,7 @@ if df is not None:
         subsample=subsample,
         colsample_bytree=colsample_bytree,
         random_state=42,
-        n_jobs=-1
+        n_jobs=-1 # Use all available cores
     )
 
     if st.button("Train Model"):
@@ -138,29 +167,37 @@ if df is not None:
         # --- Evaluation ---
         st.subheader("Model Evaluation")
 
+        # Make predictions on training and test data
         train_predict_scaled = model.predict(X_train)
         test_predict_scaled = model.predict(X_test)
 
+        # Invert predictions to original scale
         train_predict = scaler.inverse_transform(train_predict_scaled.reshape(-1, 1))
         Y_train_actual = scaler.inverse_transform(Y_train.reshape(-1, 1))
         test_predict = scaler.inverse_transform(test_predict_scaled.reshape(-1, 1))
         Y_test_actual = scaler.inverse_transform(Y_test.reshape(-1, 1))
 
+        # Calculate MAPE
         train_mape = mean_absolute_percentage_error(Y_train_actual, train_predict) * 100
         test_mape = mean_absolute_percentage_error(Y_test_actual, test_predict) * 100
 
         st.write(f"**Training MAPE:** {train_mape:.2f}%")
         st.write(f"**Testing MAPE:** {test_mape:.2f}%")
 
+        # Plotting Training and Testing Predictions
         st.subheader("Training and Testing Predictions")
         fig_predict, ax_predict = plt.subplots(figsize=(12, 6))
 
+        # Adjust indices for plotting
         train_plot_index = df.index[look_back : look_back + len(train_predict)]
         test_plot_index = df.index[look_back + len(train_predict) : look_back + len(train_predict) + len(test_predict)]
         full_plot_index = df.index[look_back:]
 
+        # Plot actual values
         ax_predict.plot(full_plot_index, scaler.inverse_transform(Y.reshape(-1,1)), label='Actual Data', color='blue')
+        # Plot training predictions
         ax_predict.plot(train_plot_index, train_predict, label='Training Prediction', color='green', linestyle='--')
+        # Plot testing predictions
         ax_predict.plot(test_plot_index, test_predict, label='Testing Prediction', color='red', linestyle='--')
 
         ax_predict.set_title("XGBoost Training and Testing Predictions")
@@ -173,31 +210,77 @@ if df is not None:
         # --- Forecasting ---
         st.subheader("Forecasting Future Values")
 
+        # Recursive Forecast
         last_sequence = scaled_data[-look_back:].reshape(1, -1)
         forecasted_values = []
 
         for _ in range(k_months):
             predicted_value_scaled = model.predict(last_sequence)
             forecasted_values.append(predicted_value_scaled[0])
+            # Update last_sequence by dropping the first element and adding the new prediction
             last_sequence = np.roll(last_sequence, -1)
             last_sequence[0, -1] = predicted_value_scaled[0]
 
         forecasted_values = scaler.inverse_transform(np.array(forecasted_values).reshape(-1, 1))
 
-        st.write(f"**Recursive Forecast for next {k_months} months:**")
-        st.write(pd.DataFrame(forecasted_values, columns=['Forecast']))
+        st.write(f"**Recursive Forecast for next {k_months} {forecast_frequency_option.lower()}s:**")
+        
+        # Create future index for recursive forecast table
+        last_timestamp_recursive = df.index[-1]
+        future_index_recursive = pd.date_range(start=last_timestamp_recursive, periods=k_months + 1, freq=selected_freq)[1:]
+        st.write(pd.DataFrame(forecasted_values, index=future_index_recursive, columns=['Forecast']))
 
-        last_timestamp = df.index[-1]
-        future_timestamps_recursive = pd.date_range(start=last_timestamp, periods=k_months + 1, freq='MS')[1:]
+        # Direct Forecast (No retraining)
+        # To make this a "direct" forecast without retraining the model,
+        # we will use the *same* trained model (which predicts 1-step ahead)
+        # and apply it recursively `k_months_direct` times to get the final
+        # forecast for the 'k_months_direct' horizon. This is a common
+        # practical approach when a separate multi-step model is not trained.
+        
+        if k_months_direct > 0:
+            direct_forecasted_values_recursive_path = []
+            temp_last_sequence = scaled_data[-look_back:].reshape(1, -1)
 
-        st.subheader("Forecasted Future Values")
-        fig_forecast, ax_forecast = plt.subplots(figsize=(12, 6))
-        ax_forecast.plot(df.index[-100:], df[data_column_name].tail(100), label='Historical Data', color='blue')
-        ax_forecast.plot(future_timestamps_recursive, forecasted_values, label=f'Recursive Forecast ({k_months} months)', color='purple', linestyle='--')
+            for _ in range(k_months_direct):
+                predicted_value_scaled_temp = model.predict(temp_last_sequence)
+                direct_forecasted_values_recursive_path.append(predicted_value_scaled_temp[0])
+                temp_last_sequence = np.roll(temp_last_sequence, -1)
+                temp_last_sequence[0, -1] = predicted_value_scaled_temp[0]
 
-        ax_forecast.set_title(f'XGBoost Time Series Forecast')
-        ax_forecast.set_xlabel('Timestamp')
-        ax_forecast.set_ylabel(data_column_name)
-        ax_forecast.legend()
-        ax_forecast.grid(True)
-        st.pyplot(fig_forecast)
+            direct_forecasted_values = scaler.inverse_transform(np.array(direct_forecasted_values_recursive_path).reshape(-1, 1))
+
+            st.write(f"**Direct Forecast (using recursive application of 1-step model) for next {k_months_direct} {forecast_frequency_option.lower()}s:**")
+            
+            # Create future index for direct forecast table
+            last_timestamp_direct = df.index[-1]
+            future_index_direct = pd.date_range(start=last_timestamp_direct, periods=k_months_direct + 1, freq=selected_freq)[1:]
+            st.write(pd.DataFrame(direct_forecasted_values, index=future_index_direct, columns=['Forecast']))
+
+            # Generate future timestamps for plotting
+            last_timestamp_plot = df.index[-1]
+            future_timestamps_recursive_plot = pd.date_range(start=last_timestamp_plot, periods=k_months + 1, freq=selected_freq)[1:]
+            future_timestamps_direct_plot = pd.date_range(start=last_timestamp_plot, periods=k_months_direct + 1, freq=selected_freq)[1:]
+
+            # Plotting all forecasts
+            st.subheader("Combined Forecasts")
+            fig_forecast, ax_forecast = plt.subplots(figsize=(12, 6))
+            
+            # Plot a reasonable portion of historical data for context
+            plot_historical_length = 50 if forecast_frequency_option == 'Daily' else 24 if forecast_frequency_option == 'Monthly' else 5
+            ax_forecast.plot(df.index[-plot_historical_length:], df[data_column_name].tail(plot_historical_length), label='Historical Data', color='blue') 
+            
+            ax_forecast.plot(future_timestamps_recursive_plot, forecasted_values, label=f'Recursive Forecast ({k_months} {forecast_frequency_option.lower()}s)', color='purple', linestyle='--')
+            ax_forecast.plot(future_timestamps_direct_plot, direct_forecasted_values, label=f'Direct Forecast (recursive path for {k_months_direct} {forecast_frequency_option.lower()}s)', color='red', linestyle='--')
+
+            ax_forecast.set_title(f'XGBoost Time Series Forecast ({forecast_frequency_option} Frequency)')
+            ax_forecast.set_xlabel("Timestamp")
+            ax_forecast.set_ylabel(data_column_name)
+            ax_forecast.legend()
+            ax_forecast.grid(True)
+            st.pyplot(fig_forecast)
+        else:
+            st.warning(f"Please set '{k_direct_label}' to a value greater than 0.")
+
+# Add footnote
+st.markdown("---")
+st.markdown("Created by Muhammad Ahsan copyright by ITS")
