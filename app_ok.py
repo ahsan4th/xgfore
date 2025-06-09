@@ -64,8 +64,8 @@ if uploaded_file is not None:
             # Resample data based on selected frequency to ensure consistent time series
             df_resampled = df[[selected_data_column]].resample(selected_freq).mean().fillna(method='ffill') # Forward fill missing values
             
-            st.subheader("Resampled Data Preview")
-            st.write(df_resampled.head())
+            # Removed: st.subheader("Resampled Data Preview")
+            # Removed: st.write(df_resampled.head())
 
         except Exception as e:
             st.sidebar.error(f"Error processing timestamp column or resampling: {e}")
