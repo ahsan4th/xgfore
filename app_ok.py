@@ -264,16 +264,8 @@ if df is not None: # Use the original df for displaying, but df_resampled for fo
             st.subheader("Recursive Forecast Plot")
             fig_forecast, ax_forecast = plt.subplots(figsize=(12, 6))
             
-            # Plot a reasonable portion of historical data for context
-            # Dynamically adjust historical plot length based on frequency
-            if forecast_frequency_option == 'Daily':
-                plot_historical_length = min(len(df_resampled), 120) # Up to 120 days
-            elif forecast_frequency_option == 'Monthly':
-                plot_historical_length = min(len(df_resampled), 36) # Up to 36 months (3 years)
-            else: # Yearly
-                plot_historical_length = min(len(df_resampled), 10) # Up to 10 years
-
-            ax_forecast.plot(df_resampled.index[-plot_historical_length:], df_resampled[data_column_name].tail(plot_historical_length), label='Historical Data', color='blue') 
+            # Plot *full* historical data
+            ax_forecast.plot(df_resampled.index, df_resampled[data_column_name], label='Historical Data', color='blue') 
             
             ax_forecast.plot(future_timestamps_recursive_plot, forecasted_values, label=f'Recursive Forecast ({k_months} {forecast_frequency_option.lower()}s)', color='purple', linestyle='--')
 
@@ -288,4 +280,4 @@ if df is not None: # Use the original df for displaying, but df_resampled for fo
 
 # Add footnote
 st.markdown("---")
-st.markdown("Created by Muhammad Ahsan copyright by ITS")
+st.markdown("Created by Muhammad Ahsan. Copyright © Institut Teknologi Sepuluh Nopember")
