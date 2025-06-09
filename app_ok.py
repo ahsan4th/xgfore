@@ -64,9 +64,6 @@ if uploaded_file is not None:
             # Resample data based on selected frequency to ensure consistent time series
             df_resampled = df[[selected_data_column]].resample(selected_freq).mean().fillna(method='ffill') # Forward fill missing values
             
-            # Removed: st.subheader("Resampled Data Preview")
-            # Removed: st.write(df_resampled.head())
-
         except Exception as e:
             st.sidebar.error(f"Error processing timestamp column or resampling: {e}")
             df = None # Invalidate df if there's an error
@@ -76,26 +73,25 @@ else:
 # --- Forecasting Parameters (only show if data is loaded) ---
 if df is not None: # Use the original df for displaying, but df_resampled for forecasting logic
     # --- ACF and PACF Plots (display immediately after data processing) ---
-    st.subheader("ACF and PACF Plots (on Resampled Data)")
-    st.write("These plots help in understanding the autocorrelation and partial autocorrelation in the resampled time series data.")
+    st.subheader("ACF and PACF Plots (on Full Original Data)") # Changed subheader
+    st.write("These plots help in understanding the autocorrelation and partial autocorrelation in the original time series data.")
     
-    if len(df_resampled[selected_data_column]) > 1: # Need at least 2 data points for ACF/PACF
-        # Ensure the series for ACF/PACF is not all NaNs, which can happen after ffill if first values are NaN
-        temp_series = df_resampled[selected_data_column].dropna()
-        if len(temp_series) > 1:
-            fig_acf, ax_acf = plt.subplots(figsize=(12, 6))
-            plot_acf(temp_series, ax=ax_acf, lags=min(20, len(temp_series) - 1)) # Max lags is length of series - 1
-            ax_acf.set_title(f'Autocorrelation Function (ACF) for {selected_data_column} ({forecast_frequency_option})')
-            st.pyplot(fig_acf)
+    # Use the original df for ACF/PACF plots
+    # Ensure the series for ACF/PACF is not all NaNs and has enough points
+    temp_series_original = df[selected_data_column].dropna()
+    
+    if len(temp_series_original) > 1: # Need at least 2 data points for ACF/PACF
+        fig_acf, ax_acf = plt.subplots(figsize=(12, 6))
+        plot_acf(temp_series_original, ax=ax_acf, lags=min(20, len(temp_series_original) - 1)) # Max lags is length of series - 1
+        ax_acf.set_title(f'Autocorrelation Function (ACF) for {selected_data_column} (Original Data)')
+        st.pyplot(fig_acf)
 
-            fig_pacf, ax_pacf = plt.subplots(figsize=(12, 6))
-            plot_pacf(temp_series, ax=ax_pacf, lags=min(20, len(temp_series) - 1))
-            ax_pacf.set_title(f'Partial Autocorrelation Function (PACF) for {selected_data_column} ({forecast_frequency_option})')
-            st.pyplot(fig_pacf)
-        else:
-            st.warning("Not enough valid data points after resampling to generate ACF/PACF plots.")
+        fig_pacf, ax_pacf = plt.subplots(figsize=(12, 6))
+        plot_pacf(temp_series_original, ax=ax_pacf, lags=min(20, len(temp_series_original) - 1))
+        ax_pacf.set_title(f'Partial Autocorrelation Function (PACF) for {selected_data_column} (Original Data)')
+        st.pyplot(fig_pacf)
     else:
-        st.warning("Not enough data points in the resampled series to generate ACF/PACF plots.")
+        st.warning("Not enough valid data points in the original series to generate ACF/PACF plots.")
 
 
     st.sidebar.header("Model Parameters")
