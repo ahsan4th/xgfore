@@ -143,10 +143,8 @@ if df is not None: # Use the original df for displaying, but df_resampled for fo
         k_default = 1
 
     k_months = st.sidebar.number_input(k_label, k_min, k_max, k_default)
-    # Removed k_months_direct input
 
     # --- Data Preparation ---
-    # Use the resampled data for model training and forecasting
     data_column_name = selected_data_column
     data = df_resampled[data_column_name].values.reshape(-1, 1)
 
@@ -163,7 +161,6 @@ if df is not None: # Use the original df for displaying, but df_resampled for fo
 
     X, Y = create_dataset(scaled_data, look_back)
 
-    # Split into training and testing sets
     test_size = int(len(X) * test_size_ratio)
     train_size = len(X) - test_size
     X_train, X_test = X[0:train_size,:], X[train_size:len(X),:]
@@ -171,7 +168,6 @@ if df is not None: # Use the original df for displaying, but df_resampled for fo
 
     # --- XGBoost Model Training ---
     st.subheader("Model Training")
-    # Initialize and train the XGBoost regressor
     model = xgb.XGBRegressor(
         n_estimators=n_estimators,
         max_depth=max_depth,
@@ -179,7 +175,7 @@ if df is not None: # Use the original df for displaying, but df_resampled for fo
         subsample=subsample,
         colsample_bytree=colsample_bytree,
         random_state=42,
-        n_jobs=-1 # Use all available cores
+        n_jobs=-1
     )
 
     if st.button("Train Model"):
@@ -193,32 +189,76 @@ if df is not None: # Use the original df for displaying, but df_resampled for fo
             # --- Evaluation ---
             st.subheader("Model Evaluation")
 
-            # Make predictions on training and test data
             train_predict_scaled = model.predict(X_train)
             test_predict_scaled = model.predict(X_test)
 
-            # Invert predictions to original scale
             train_predict = scaler.inverse_transform(train_predict_scaled.reshape(-1, 1))
             Y_train_actual = scaler.inverse_transform(Y_train.reshape(-1, 1))
             test_predict = scaler.inverse_transform(test_predict_scaled.reshape(-1, 1))
             Y_test_actual = scaler.inverse_transform(Y_test.reshape(-1, 1))
 
-            # Calculate MAPE
             train_mape = mean_absolute_percentage_error(Y_train_actual, train_predict) * 100
             test_mape = mean_absolute_percentage_error(Y_test_actual, test_predict) * 100
 
             st.write(f"**Training MAPE:** {train_mape:.2f}%")
             st.write(f"**Testing MAPE:** {test_mape:.2f}%")
-
-            # Plotting Training and Testing Predictions
-            st.subheader("Training and Testing Predictions")
-            fig_predict, ax_predict = plt.subplots(figsize=(12, 6))
-
-            # Adjust indices for plotting (using df_resampled for plotting indices)
+            
+            # --- MODIFIKASI --- Adjust indices for plotting
             train_plot_index = df_resampled.index[look_back : look_back + len(train_predict)]
             test_plot_index = df_resampled.index[look_back + len(train_predict) : look_back + len(train_predict) + len(test_predict)]
             full_plot_index = df_resampled.index[look_back:]
 
+            # --- TAMBAHAN: Perhitungan dan Penyimpanan Residual ---
+            st.subheader("Analisis Residual")
+
+            # Hitung residual
+            train_residuals = Y_train_actual - train_predict
+            test_residuals = Y_test_actual - test_predict
+
+            # Plot Residual
+            fig_residuals, ax_residuals = plt.subplots(figsize=(12, 6))
+            ax_residuals.plot(train_plot_index, train_residuals, label='Training Residuals', color='blue', alpha=0.7)
+            ax_residuals.plot(test_plot_index, test_residuals, label='Testing Residuals', color='red', alpha=0.7)
+            ax_residuals.axhline(y=0, color='k', linestyle='--', linewidth=1) # Garis nol
+            ax_residuals.set_title("Training and Testing Residuals")
+            ax_residuals.set_xlabel("Timestamp")
+            ax_residuals.set_ylabel("Residual Value")
+            ax_residuals.legend()
+            ax_residuals.grid(True)
+            st.pyplot(fig_residuals)
+
+            # Buat DataFrame untuk residual
+            df_train_residuals = pd.DataFrame(train_residuals, index=train_plot_index, columns=['Residual'])
+            df_test_residuals = pd.DataFrame(test_residuals, index=test_plot_index, columns=['Residual'])
+
+            # Tampilkan dan sediakan tombol download
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("**Training Residuals Data**")
+                st.dataframe(df_train_residuals)
+                st.download_button(
+                    label="Download Training Residuals as CSV",
+                    data=df_train_residuals.to_csv().encode('utf-8'),
+                    file_name='training_residuals.csv',
+                    mime='text/csv',
+                )
+
+            with col2:
+                st.write("**Testing Residuals Data**")
+                st.dataframe(df_test_residuals)
+                st.download_button(
+                    label="Download Testing Residuals as CSV",
+                    data=df_test_residuals.to_csv().encode('utf-8'),
+                    file_name='testing_residuals.csv',
+                    mime='text/csv',
+                )
+            # --- AKHIR TAMBAHAN ---
+
+
+            # Plotting Training and Testing Predictions
+            st.subheader("Training and Testing Predictions")
+            fig_predict, ax_predict = plt.subplots(figsize=(12, 6))
+            
             # Plot actual values
             ax_predict.plot(full_plot_index, scaler.inverse_transform(Y.reshape(-1,1)), label='Actual Data', color='blue')
             # Plot training predictions
@@ -234,16 +274,14 @@ if df is not None: # Use the original df for displaying, but df_resampled for fo
             st.pyplot(fig_predict)
 
             # --- Forecasting ---
-            st.subheader("Forecasting Future Values (Recursive)") # Updated subheader
+            st.subheader("Forecasting Future Values (Recursive)")
 
-            # Recursive Forecast
             last_sequence = scaled_data[-look_back:].reshape(1, -1)
             forecasted_values = []
 
             for _ in range(k_months):
                 predicted_value_scaled = model.predict(last_sequence)
                 forecasted_values.append(predicted_value_scaled[0])
-                # Update last_sequence by dropping the first element and adding the new prediction
                 last_sequence = np.roll(last_sequence, -1)
                 last_sequence[0, -1] = predicted_value_scaled[0]
 
@@ -251,20 +289,16 @@ if df is not None: # Use the original df for displaying, but df_resampled for fo
 
             st.write(f"**Recursive Forecast for next {k_months} {forecast_frequency_option.lower()}s:**")
             
-            # Create future index for recursive forecast table
             last_timestamp_recursive = df_resampled.index[-1]
             future_index_recursive = pd.date_range(start=last_timestamp_recursive, periods=k_months + 1, freq=selected_freq)[1:]
             st.write(pd.DataFrame(forecasted_values, index=future_index_recursive, columns=['Forecast']))
 
-            # Generate future timestamps for plotting
             last_timestamp_plot = df_resampled.index[-1]
             future_timestamps_recursive_plot = pd.date_range(start=last_timestamp_plot, periods=k_months + 1, freq=selected_freq)[1:]
 
-            # Plotting only recursive forecast
             st.subheader("Recursive Forecast Plot")
             fig_forecast, ax_forecast = plt.subplots(figsize=(12, 6))
             
-            # Plot *full* historical data
             ax_forecast.plot(df_resampled.index, df_resampled[data_column_name], label='Historical Data', color='blue') 
             
             ax_forecast.plot(future_timestamps_recursive_plot, forecasted_values, label=f'Recursive Forecast ({k_months} {forecast_frequency_option.lower()}s)', color='purple', linestyle='--')
@@ -278,6 +312,5 @@ if df is not None: # Use the original df for displaying, but df_resampled for fo
     else:
         st.info("Please train the model first to see forecasts.")
 
-# Add footnote
 st.markdown("---")
 st.markdown("Created by Muhammad Ahsan. Copyright © Institut Teknologi Sepuluh Nopember")
